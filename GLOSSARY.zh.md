@@ -78,7 +78,7 @@ _Avoid_: Clone, copy, branch, commit
 _Avoid_: Snapshot, commit, image capture, checkpoint
 
 **Terminated**:
-Sandbox 已经销毁，不能再恢复。原因可能是主动销毁、超时、失败或对账时被清理。
+Sandbox 已经销毁，不能再恢复。原因可能是主动销毁、超时、失败或对账时被清理。它会记下一个终止原因：`deleted`（通过 API 销毁）、`failed`（创建失败，或 Sandbox 自身出错）或 `start_timeout`（在创建超时之内没有进入 Running），外加一段给人看的说明。后续任务会加上各自的原因，比如 `disk_limit`。
 _Avoid_: Deleted, dead
 
 ## 使用

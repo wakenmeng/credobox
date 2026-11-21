@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+// The Host Agent's control service. Only the Control Plane calls it, over a
+// unix socket in phase 1 (ADR 0001, ADR 0005).
+package gpubox.hostagent.v1;
+
+option go_package = "gpubox/gen/hostagent/v1;hostagentv1";
+
+service HostAgent {
+  // CreateSandbox starts a Sandbox through the Runtime and returns once its
+  // Init has completed, so the Sandbox is Running. On failure or when the
+  // call's deadline passes, the Host Agent removes whatever it started.
+  rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
+
+  // DestroySandbox removes the Sandbox. Destroying an unknown Sandbox is
+  // not an error.
+  rpc DestroySandbox(DestroySandboxRequest) returns (DestroySandboxResponse);
+}
+
+message CreateSandboxRequest {
+  string sandbox_id = 1;
+  // The Template's OCI image reference.
+  string template_image = 2;
+  // The Access Token the Host data proxy must require for this Sandbox.
+  string access_token = 3;
+}
+
+message CreateSandboxResponse {
+  // Base URL of this Host's data proxy (ADR 0007).
+  string data_endpoint = 1;
+}
+
+message DestroySandboxRequest {
+  string sandbox_id = 1;
+}
+
+message DestroySandboxResponse {}

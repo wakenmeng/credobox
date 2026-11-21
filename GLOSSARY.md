@@ -78,7 +78,7 @@ Saving a Sandbox's current filesystem as a new private Template. Memory and proc
 _Avoid_: Snapshot, commit, image capture, checkpoint
 
 **Terminated**:
-The Sandbox has been destroyed and cannot be resumed. It may have been deleted, timed out, failed, or been cleaned up by reconciliation.
+The Sandbox has been destroyed and cannot be resumed. It may have been deleted, timed out, failed, or been cleaned up by reconciliation. It records a termination reason: `deleted` (an API call destroyed it), `failed` (creation or the Sandbox itself failed) or `start_timeout` (it was not Running within the create timeout), plus a human-readable detail. Later tickets add their own reasons, such as `disk_limit`.
 _Avoid_: Deleted, dead
 
 ## Working in a Sandbox

@@ -100,6 +100,7 @@ Running ⇄ Hibernated (phase 3b)
 Any state ──▶ Terminated (deleted / max lifetime exceeded / Frozen timeout / disk_limit / failed / reconciliation cleanup)
 ```
 
+- **Termination reasons**: a Terminated Sandbox records one reason code and a human-readable detail. Codes so far: `deleted` (destroyed through the API), `failed` (creation or the Sandbox itself failed), `start_timeout` (not Running within the create timeout; the Host Agent removes whatever it started). Each later ticket names its own code in the same style (`disk_limit`, and so on).
 - **Init**: before any user process runs, and after every start, restore and Fork, the Host Agent gives the Sandbox a fresh identity (ADR 0008). A Sandbox is Starting until Init completes.
 - **Idle**: API calls, running Execs, running Processes, active streams and open connections on Exposed Ports all count as activity. The Host Agent reports `last_activity_at` and the number of active operations; the Control Plane owns the deadlines. By default a Sandbox becomes **Stopped** after 5 idle minutes. The timeout can be changed, but not beyond the Quota's maximum lifetime, which still bounds a forgotten server.
 - **Stopped**: keeps the filesystem and Sandbox ID, releases CPU and memory, and is kept for 7 days before becoming Terminated. Restarting it boots fresh and runs Init again. Auto-start on Exposed Port traffic is deferred, because it needs the Control Plane in the request path.

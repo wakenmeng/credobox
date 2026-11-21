@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+// The Guest Agent's service: the only operational entry point into a
+// Sandbox (ADR 0002). The Host Agent is its only client, over a channel the
+// Host Agent opens (ADR 0005).
+package gpubox.guestagent.v1;
+
+option go_package = "gpubox/gen/guestagent/v1;guestagentv1";
+
+service GuestAgent {
+  // Init gives this incarnation of the Sandbox its identity (ADR 0008).
+  // Until it completes, the Guest Agent starts no user process and refuses
+  // every other call. Later calls must carry the token in the
+  // "authorization" metadata.
+  rpc Init(InitRequest) returns (InitResponse);
+
+  // Exec runs a foreground command to completion.
+  rpc Exec(ExecRequest) returns (ExecResponse);
+}
+
+message InitRequest {
+  // A fresh random token for this incarnation. Kept only in memory.
+  string token = 1;
+}
+
+message InitResponse {}
+
+message ExecRequest {
+  // Run with /bin/sh -c.
+  string command = 1;
+}
+
+message ExecResponse {
+  bytes stdout = 1;
+  bytes stderr = 2;
+  int32 exit_code = 3;
+}

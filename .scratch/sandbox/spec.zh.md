@@ -100,6 +100,7 @@ Running ⇄ Hibernated（阶段 3b）
 任何状态 ──▶ Terminated（主动删除 / 超过最长存活 / Frozen 超时 / disk_limit / 失败 / 对账清理）
 ```
 
+- **终止原因**：Terminated 的 Sandbox 会记下一个原因代码和一段给人看的说明。目前的代码：`deleted`（通过 API 销毁）、`failed`（创建失败，或 Sandbox 自身出错）、`start_timeout`（在创建超时之内没有进入 Running；Host Agent 会清掉它已经启动的东西）。后续任务按同样的风格各自命名（`disk_limit` 等）。
 - **Init**：在任何用户进程运行之前，以及每次启动、恢复和 Fork 之后，Host Agent 都会给 Sandbox 一个新的身份（ADR 0008）。Init 完成前，Sandbox 都处于 Starting。
 - **空闲**：API 调用、正在执行的 Exec、正在运行的 Process、正在进行的流式输出、Exposed Port 上打开的连接都算活动。Host Agent 上报 `last_activity_at` 和正在进行的操作数，由 Control Plane 掌管截止时间。默认空闲 5 分钟后变成 **Stopped**。可以调整，但不能超过 Quota 里的最长存活时间；忘了关的服务仍然受它约束。
 - **Stopped**：保留文件系统和 Sandbox ID，释放 CPU 和内存，保留 7 天后变成 Terminated。重新启动时从头开机，并再做一次 Init。Exposed Port 收到流量时自动启动，这一项推迟，因为需要 Control Plane 参与请求转发。
