@@ -35,7 +35,7 @@ This is a learning project. Learning isolation is a formal deliverable, as impor
 Tenant's agent ──REST──▶ Control Plane ──gRPC (unix socket in phase 1)──▶ Host Agent
       │                  (SQLite, source of truth)                          │
       │ data path: Exec, files, Processes, code interpreter                 ├─ Runtime: Docker / gVisor / Firecracker
-      └──REST/SSE + Access Token──▶ Host data proxy ─────────────────────── ├─ gRPC over unix socket / vsock ──▶ Guest Agent (PID 1 in every Sandbox)
+      └──REST/SSE + Access Token──▶ Host data proxy ─────────────────────── ├─ gRPC over docker exec stdio (phase 1) / vsock ──▶ Guest Agent (PID 1 in every Sandbox)
                                     (also serves Exposed Ports)              
 
 On each Host, and the only things a Sandbox may connect to (ADR 0005):
@@ -44,7 +44,7 @@ On each Host, and the only things a Sandbox may connect to (ADR 0005):
 ```
 
 - Split the Control Plane and the Host Agent: [ADR 0001](../../docs/adr/0001-control-plane-host-agent-split.md)
-- One Guest Agent shared by every Runtime (phase 1 needs Docker Desktop ≥ 4.86 with VirtioFS; fallback transport `docker exec -i --stdio`): [ADR 0002](../../docs/adr/0002-single-guest-agent-across-runtimes.md)
+- One Guest Agent shared by every Runtime (phase 1 transport, measured in ticket 00: one long-lived `docker exec -i` stream per Sandbox, 0.25 ms per round trip): [ADR 0002](../../docs/adr/0002-single-guest-agent-across-runtimes.md)
 - The platform injects the Guest Agent: [ADR 0003](../../docs/adr/0003-platform-injects-guest-agent.md)
 - Connections across the Sandbox boundary are only opened outside-in; the Egress Proxy and DNS resolver are the one exception; the Control Plane ↔ Host Agent direction is decided separately: [ADR 0005](../../docs/adr/0005-connections-only-outside-in.md)
 - Secrets are placeholders swapped in by the Egress Proxy: [ADR 0006](../../docs/adr/0006-secrets-as-placeholders.md)
@@ -125,15 +125,15 @@ Any state ──▶ Terminated (deleted / max lifetime exceeded / Frozen timeout
 There are three trust zones: the Control Plane (trusted), the Host Agent (trusted), and the inside of a Sandbox (**untrusted**).
 
 - Control Plane ↔ Host Agent: a unix socket and a shared token in phase 1; when Hosts sit behind NAT, a Host-opened tunnel with mTLS (ADR 0005).
-- Host Agent ↔ Guest Agent: a fresh random token per incarnation, delivered in Init. The Guest Agent keeps it only in memory and is non-dumpable. With `CAP_SYS_PTRACE` dropped, neither the ordinary user nor a root Exec can read it. That is exactly what the token protects against (ADR 0008).
+- Host Agent ↔ Guest Agent: a fresh random token per incarnation, delivered in Init. The Guest Agent keeps it only in memory and is non-dumpable. With `CAP_SYS_PTRACE` dropped, neither the ordinary user nor a root Exec can read it. That is exactly what the token protects against (ADR 0008). In phase 1 the channel is a long-lived `docker exec -i` stream relayed by `guestagent bridge` to the Guest Agent's root-only (0600) socket inside the container, because unix sockets don't cross the macOS/VM boundary (ADR 0002).
 - Connections across the Sandbox boundary are only opened outside-in. The only exception is the Egress Proxy and the DNS resolver, which have no management API. On Docker Desktop they run as containers in the Docker VM; the Host Agent configures them over a connection it opens, or through a read-only mounted file.
-- Network on Docker Desktop: each Sandbox is attached only to its own `--internal` network with gateway mode `isolated` (Docker Engine ≥ 28). The Sandbox has no default route, and nothing answers on the network gateway.
+- Network on Docker Desktop: each Sandbox is attached only to its own `--internal` network with gateway mode `isolated` (Docker Engine ≥ 28). The Sandbox has no default route, and nothing answers on the network gateway. Measured in ticket 00: on ordinary networks a container reaches even 127.0.0.1-only Mac services through `host.docker.internal`, and `--internal` alone still reaches the VM's own listeners (rpcbind) through the gateway; only `isolated` closes both.
 - Docker hardening: an ordinary user; all capabilities dropped, then SETUID, SETGID, CHOWN, DAC_OVERRIDE, FOWNER and KILL added back; `no-new-privileges`; a process limit; CPU and memory limits; the default seccomp profile; no Docker socket mounted; no privileged mode.
 - Egress: blocked by default, as at Cloudflare, OpenAI's hosted shell and Google. Allowlists combine domains and Allowlist Presets (`llm-providers`, `package-registries`, `github`) and can be updated while the Sandbox runs. The Egress Proxy checks the Host header for HTTP and the SNI for HTTPS, and only HTTP and HTTPS are allowed. The metadata address `169.254.169.254`, the Host itself and private network addresses are always blocked.
 - DNS: a Sandbox can only use the platform's DNS resolver, which answers only for allowlisted names; all other DNS traffic is blocked. This closes DNS tunnelling.
 - Secrets: placeholders inside the Sandbox, swapped in by the Egress Proxy, with required destination hosts, fail-closed, headers only, and no response scrubbing in v1. The per-Sandbox CA is provided through a read-only mount and `SSL_CERT_FILE`-style variables, never written into the trust store (ADR 0006).
-- Capture rebuilds the image config explicitly from the source Template, so placeholders, proxy variables, the CA and the Guest Agent entrypoint are never baked in.
-- Disk: Docker Desktop's default image store silently ignores `--storage-opt size`. As a soft limit, the Host Agent polls each Sandbox's writable-layer size and terminates it with reason `disk_limit`. The isolation report records this honestly as a soft limit, not a hard one.
+- Capture: `docker commit` merges any explicit config with the container's own (ticket 00, E6), so nothing can be stripped afterwards. Platform environment variables are therefore never in the container config; Init delivers them (ADR 0008). A captured Template's record keeps the source Template's original Entrypoint, Cmd, Env, User and WorkingDir.
+- Disk: measured in ticket 00, `--storage-opt size` is rejected outright on Docker Desktop's classic `overlay2` store (the backing filesystem is ext4); research says the containerd image store would silently ignore it instead. Either way there is no hard limit by default. As a soft limit, the Host Agent polls each Sandbox's writable-layer size and terminates it with reason `disk_limit`. The isolation report records this honestly as a soft limit, not a hard one.
 
 ## 8. Verification
 

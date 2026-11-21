@@ -14,3 +14,11 @@ Use `/prototype` to run experiments E1–E8 from §5 of [the Docker/gVisor note]
 
 ## Learn
 How Docker Desktop's Linux VM, VirtioFS and its network stack fit together.
+
+## Status (2026-11-21)
+
+E1–E7 ran on Docker Desktop 4.87.0; E8 (gVisor in Lima) is deferred to phase 2. The scripts, raw logs and results are on the branch `prototype/mac-experiments` (commit `603dbb0`), in `prototype/mac-experiments/RESULTS.md`.
+
+- Contradicted: the unix socket does not cross the macOS/VM boundary (ADR 0002 amendment), and committing with an explicit config does not strip Env or Entrypoint (ADR 0006 amendment, ticket 22). Both were decided on 2026-11-21: the phase 1 channel is a long-lived `docker exec -i` stream (ADR 0002), and platform environment variables never enter the container config (ADRs 0006, 0008; tickets 01, 13, 22, 23).
+- Corrected: spec §7 disk wording.
+- Confirmed: isolated internal networks (and that `--internal` alone leaks the VM's listeners), the proxy and resolver design, freeze, the minimal capability set, non-dumpable.

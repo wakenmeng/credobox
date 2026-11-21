@@ -15,6 +15,7 @@
 - [ ] Inside a Sandbox, nothing on `host.docker.internal` reaches the Host Agent
 - [ ] The token is in no environment variable and no file in the Sandbox
 - [ ] Writing past the disk limit ends the Sandbox with reason `disk_limit`
+- [ ] The Guest Agent's socket inside the container is root-only (0600), and the ordinary user can't connect to it
 
 ## Learn
 What Linux capabilities, seccomp, `no-new-privileges` and the non-dumpable flag each block. This is the core material for the isolation note.

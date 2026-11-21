@@ -11,5 +11,6 @@
 - [ ] Install a package in Sandbox A, Capture it, create Sandbox B from the new Template: the package is there
 - [ ] The Guest Agent binary and the Sandbox's token are not baked into the captured Template (ADR 0003)
 - [ ] The captured Template is private to the Tenant
-- [ ] The new image's config is rebuilt explicitly from the source Template's image config: no Secret placeholders, proxy variables or Guest Agent entrypoint
+- [ ] The captured Template's record keeps the source Template's original Entrypoint, Cmd, Env, User and WorkingDir; the committed image config is never trusted (ticket 00, E6)
 - [ ] A Sandbox created from the captured Template does not trust the original Sandbox's CA
+- [ ] The captured image's config contains no Secret placeholders or proxy variables, because they were never in the container config

@@ -10,7 +10,7 @@ agent 跑在 Sandbox 里时需要凭据，比如 LLM 的 API key，但 Sandbox �
 - **第一版不改写响应。** 如果某个允许的域名把凭据原样返回，Sandbox 会看到它。这一点作为已知限制写进文档。
 - **每个 Sandbox 一个 CA**，只被这一个 Sandbox 信任（具体做法见下面的修订），CA 私钥泄露只影响这一个 Sandbox。
 
-**修订（2026-11-21，调研后）：CA 怎么放进去。** 每个 Sandbox 的 CA 不写进系统信任库，因为 `docker commit` 会把它固化进每一个 Capture 出来的 Template。改为通过只读挂载提供，再用 `SSL_CERT_FILE` 之类的环境变量指向它，并在 Init 中下发（[ADR 0008](0008-guest-agent-lifecycle.zh.md)）。Capture 时根据源 Template 显式重建镜像配置，所以占位符、代理环境变量和 CA 都不会进入 Capture 出来的 Template。
+**修订（2026-11-21，调研后）：CA 怎么放进去。** 每个 Sandbox 的 CA 不写进系统信任库，因为 `docker commit` 会把它固化进每一个 Capture 出来的 Template。改为通过只读挂载提供，再用 `SSL_CERT_FILE` 之类的环境变量指向它，并在 Init 中下发（[ADR 0008](0008-guest-agent-lifecycle.zh.md)）。任务 00（E6）证明，`docker commit` 会把显式传入的配置和容器自己的配置合并，而不是替换掉它，所以 Capture 没法事后去掉任何东西。改为：占位符、代理环境变量和 CA 路径从一开始就不进入容器配置，而是由 Init 下发给 Guest Agent 启动的进程（ADR 0008）；Capture 出来的 Template，其记录里保存源 Template 原始的 Entrypoint、Cmd、Env、User 和 WorkingDir。
 
 ## Considered Options
 

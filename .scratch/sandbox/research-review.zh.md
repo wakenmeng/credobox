@@ -67,3 +67,15 @@
 ## 5. 任务 01 之前：在 Mac 上做实验
 
 Docker/gVisor 报告的 §5 列了文档定不下来的实验 E1–E8（unix socket 能否穿过 VirtioFS、能否连到 Mac 上只监听 127.0.0.1 的服务、`--storage-opt size` 是否被悄悄忽略等）。先用 `/prototype` 把它们跑一遍，第一阶段的地基就从"文档上说可以"变成"实测过"。
+
+## 6. 任务 00 的结果（在这台 Mac 上实测）
+
+完整结果：`prototype/mac-experiments` 分支上的 `prototype/mac-experiments/RESULTS.zh.md`。
+
+| 调研的说法 | 在 Docker Desktop 4.87.0 上实测 | 决定 |
+|---|---|---|
+| 从 4.86 起，unix socket 能穿过 VirtioFS | **不能**，两个方向都不行 | **已决定：** 第一阶段的通道改为一条长连接的 `docker exec -i` 流（每次往返 0.25 ms）→ ADR 0002、spec §3/§7、任务 01 |
+| 带显式配置 commit 能去掉 Env 和 Entrypoint | **不能**：Docker 会合并配置 | **已决定：** 平台相关的环境变量从不进入容器配置，由 Init 下发；Template 记录保存镜像原始配置 → ADR 0006/0008、spec §7、任务 01/13/22/23 |
+| `--storage-opt size` 会被悄悄忽略 | 被明确报错拒绝（传统 overlay2，底层是 ext4） | 已更正 spec §7 的说法；软限制不变 |
+| 需要 `--internal` 加 `isolated` | 确认，而且只用 `--internal` 仍会暴露虚拟机自己的监听端口 | 不变 |
+| 冻结、最小的 capabilities 组合、non-dumpable | 确认 | 不变 |

@@ -10,7 +10,7 @@ When an agent runs inside a Sandbox it needs credentials such as an LLM API key,
 - **No response scrubbing in v1.** If an allowed host echoes the credential back, the Sandbox sees it; this is documented as a known limitation.
 - **One CA per Sandbox**, trusted only by that Sandbox (see the amendment below for how), so a leaked CA key affects only that Sandbox.
 
-**Amendment (2026-11-21, after research): how the CA gets in.** The per-Sandbox CA is not written into the system trust store, because `docker commit` would bake it into every captured Template. It is provided through a read-only mount, with `SSL_CERT_FILE`-style environment variables pointing at it, and delivered in Init ([ADR 0008](0008-guest-agent-lifecycle.md)). Capture rebuilds the image config explicitly from the source Template, so placeholders, proxy variables and the CA never end up in a captured Template.
+**Amendment (2026-11-21, after research): how the CA gets in.** The per-Sandbox CA is not written into the system trust store, because `docker commit` would bake it into every captured Template. It is provided through a read-only mount, with `SSL_CERT_FILE`-style environment variables pointing at it, and delivered in Init ([ADR 0008](0008-guest-agent-lifecycle.md)). Ticket 00 (E6) showed that `docker commit` merges an explicit config with the container's own instead of replacing it, so Capture can't strip anything after the fact. Instead, placeholders, proxy variables and the CA path are never part of the container config: Init delivers them to the processes the Guest Agent starts (ADR 0008), and a captured Template's record keeps the source Template's original Entrypoint, Cmd, Env, User and WorkingDir.
 
 ## Considered Options
 

@@ -35,7 +35,7 @@ AI agent 需要一台一次性的隔离计算机来运行它写出来的不可�
 Tenant 的 agent ──REST──▶ Control Plane ──gRPC（第一阶段走 unix socket）──▶ Host Agent
       │                  （SQLite，状态以此为准）                            │
       │ 数据通路：Exec、文件、Process、代码解释器                             ├─ Runtime：Docker / gVisor / Firecracker
-      └──REST/SSE + Access Token──▶ Host 数据代理 ──────────────────────── ├─ gRPC over unix socket / vsock ──▶ Guest Agent（每个 Sandbox 里的 PID 1）
+      └──REST/SSE + Access Token──▶ Host 数据代理 ──────────────────────── ├─ gRPC over docker exec stdio（第一阶段）/ vsock ──▶ Guest Agent（每个 Sandbox 里的 PID 1）
                                     （也负责 Exposed Port）
 
 每台 Host 上，也是 Sandbox 唯一允许主动连接的组件（ADR 0005）：
@@ -44,7 +44,7 @@ Tenant 的 agent ──REST──▶ Control Plane ──gRPC（第一阶段走 
 ```
 
 - 拆分 Control Plane 和 Host Agent：[ADR 0001](../../docs/adr/0001-control-plane-host-agent-split.zh.md)
-- 所有 Runtime 共用一个 Guest Agent（第一阶段需要 Docker Desktop ≥ 4.86 并使用 VirtioFS；后备通道是 `docker exec -i --stdio`）：[ADR 0002](../../docs/adr/0002-single-guest-agent-across-runtimes.zh.md)
+- 所有 Runtime 共用一个 Guest Agent（第一阶段的传输方式，任务 00 实测：每个 Sandbox 一条长连接的 `docker exec -i` 流，每次往返 0.25 ms）：[ADR 0002](../../docs/adr/0002-single-guest-agent-across-runtimes.zh.md)
 - 由平台注入 Guest Agent：[ADR 0003](../../docs/adr/0003-platform-injects-guest-agent.zh.md)
 - 跨 Sandbox 边界的连接只能由外向内发起；Egress Proxy 和 DNS 解析器是唯一的例外；Control Plane 和 Host Agent 之间谁连谁另行决定：[ADR 0005](../../docs/adr/0005-connections-only-outside-in.zh.md)
 - Secret 是占位符，由 Egress Proxy 换成真实值：[ADR 0006](../../docs/adr/0006-secrets-as-placeholders.zh.md)
@@ -125,15 +125,15 @@ Running ⇄ Hibernated（阶段 3b）
 信任分三个区域：Control Plane（可信）、Host Agent（可信）、Sandbox 内部（**不可信**）。
 
 - Control Plane 和 Host Agent 之间：第一阶段用 unix socket 加共享 token；等 Host 跑到 NAT 后面，改为由 Host 主动建立的隧道，加 mTLS（ADR 0005）。
-- Host Agent 和 Guest Agent 之间：每次启动都换一个新的随机 token，在 Init 中下发。Guest Agent 只把它放在内存里，并且是 non-dumpable 的。在去掉 `CAP_SYS_PTRACE` 的前提下，普通用户和用 root 执行的命令都读不到它。token 防范的正是这一点（ADR 0008）。
+- Host Agent 和 Guest Agent 之间：每次启动都换一个新的随机 token，在 Init 中下发。Guest Agent 只把它放在内存里，并且是 non-dumpable 的。在去掉 `CAP_SYS_PTRACE` 的前提下，普通用户和用 root 执行的命令都读不到它。token 防范的正是这一点（ADR 0008）。第一阶段的通道是一条长连接的 `docker exec -i` 流，由 `guestagent bridge` 转接到容器内 Guest Agent 的 socket，这个 socket 只有 root 能访问（0600）；因为 unix socket 跨不过 macOS 和虚拟机之间的边界（ADR 0002）。
 - 跨 Sandbox 边界的连接只能由外向内发起。唯一的例外是 Egress Proxy 和 DNS 解析器，它们没有管理接口。在 Docker Desktop 上，它们作为容器跑在 Docker 的虚拟机里；Host Agent 通过自己发起的连接，或者一个只读挂载的文件，给它们下发配置。
-- Docker Desktop 上的网络：每个 Sandbox 只接自己的一个 `--internal` 网络，网关模式为 `isolated`（需要 Docker Engine ≥ 28）。Sandbox 里没有默认路由，网络网关上也没有任何服务响应。
+- Docker Desktop 上的网络：每个 Sandbox 只接自己的一个 `--internal` 网络，网关模式为 `isolated`（需要 Docker Engine ≥ 28）。Sandbox 里没有默认路由，网络网关上也没有任何服务响应。任务 00 实测：在普通网络上，容器通过 `host.docker.internal` 连得到 Mac 上只监听 127.0.0.1 的服务；只用 `--internal` 时，仍然能通过网关连到虚拟机自己的监听端口（rpcbind）；只有加上 `isolated` 才能把两者都堵上。
 - Docker 加固：普通用户；先去掉全部 capabilities，再加回 SETUID、SETGID、CHOWN、DAC_OVERRIDE、FOWNER、KILL；`no-new-privileges`；限制进程数；限制 CPU 和内存；默认 seccomp；不挂 Docker socket；不用特权模式。
 - 出网：默认禁止，和 Cloudflare、OpenAI 托管 shell、Google 一样。白名单可以混用域名和 Allowlist Preset（`llm-providers`、`package-registries`、`github`），并且可以在 Sandbox 运行中修改。Egress Proxy 检查 HTTP 的 Host 头和 HTTPS 的 SNI，只放行 HTTP 和 HTTPS。元数据地址 `169.254.169.254`、Host 本机和内网地址永远禁止访问。
 - DNS：Sandbox 只能用平台的 DNS 解析器，它只解析白名单里的域名；其他所有 DNS 流量一律禁止。这样就堵住了 DNS 隧道。
 - Secret：Sandbox 里只有占位符，由 Egress Proxy 换成真实值；必须绑定目标域名，换不了就拦截，只替换 header，第一版不改写响应。每个 Sandbox 的 CA 通过只读挂载和 `SSL_CERT_FILE` 之类的环境变量提供，永远不写进信任库（ADR 0006）。
-- Capture 时根据源 Template 显式重建镜像配置，所以占位符、代理环境变量、CA 和 Guest Agent 的入口都不会被固化进去。
-- 磁盘：Docker Desktop 默认的镜像存储会悄悄忽略 `--storage-opt size`。作为软限制，Host Agent 定期检查每个 Sandbox 可写层的大小，超出就以 `disk_limit` 为原因终止。隔离报告里如实记为软限制，而不是硬限制。
+- Capture：`docker commit` 会把显式传入的配置和容器自己的配置合并（任务 00，E6），所以事后去不掉任何东西。因此平台相关的环境变量从不放进容器配置，而由 Init 下发（ADR 0008）。Capture 出来的 Template，其记录里保存源 Template 原始的 Entrypoint、Cmd、Env、User 和 WorkingDir。
+- 磁盘：任务 00 实测，在 Docker Desktop 传统的 `overlay2` 存储上（底层文件系统是 ext4），`--storage-opt size` 会被直接拒绝；调研说如果开启 containerd 镜像存储，它会被悄悄忽略。不管哪种，默认都没有硬限制。作为软限制，Host Agent 定期检查每个 Sandbox 可写层的大小，超出就以 `disk_limit` 为原因终止。隔离报告里如实记为软限制，而不是硬限制。
 
 ## 8. 验证
 

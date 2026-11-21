@@ -15,6 +15,7 @@
 - [ ] 在 Sandbox 里，通过 `host.docker.internal` 连不到 Host Agent
 - [ ] Sandbox 里没有任何环境变量或文件包含这个 token
 - [ ] 写入超过磁盘限制时，Sandbox 以 `disk_limit` 为原因结束
+- [ ] 容器内 Guest Agent 的 socket 只有 root 能访问（0600），普通用户连不上
 
 ## 学什么
 Linux capabilities、seccomp、`no-new-privileges` 和 non-dumpable 标志分别挡住什么。这是隔离笔记的核心素材。

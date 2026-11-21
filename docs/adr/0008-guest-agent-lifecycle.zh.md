@@ -4,6 +4,8 @@
 
 每个 Sandbox 里，Guest Agent 都以 **PID 1** 启动：它回收子进程，在 Firecracker 上挂载伪文件系统，然后启动镜像自己的 entrypoint。在任何用户进程运行之前，以及每次重新启动、恢复和 Fork 之后，Host Agent 都会给它发一次 **Init** 调用，带上新的 token、宿主机提供的随机数、正确的时钟、新的 `boot_id`、环境变量和 CA。Init 完成前，Sandbox 不算 Running。因为每次都换上新的身份，Fork 就不会再让两个 Sandbox 拿着同一个 token、同样的随机数状态或同一个时钟（见 [Firecracker 调研](../research/firecracker-microvm.zh.md)里的克隆隐患）。Guest Agent 还会把自己设为 **non-dumpable**。在去掉 `CAP_SYS_PTRACE` 的前提下，普通用户和用 root 执行的命令都读不到它的内存。spec 里写明：这就是 token 所防范的威胁。
 
+**修订（2026-11-21，任务 00 之后）。** 容器配置里只有镜像自己的配置，加上作为入口的 Guest Agent。所有平台相关的环境变量（Secret 占位符、代理环境变量、CA 路径）都在 Init 中下发，由 Guest Agent 加到它启动的进程上。镜像原始的 Entrypoint、Cmd、Env、User 和 WorkingDir 从 Template 记录里读取，而不是从容器配置里读取。这样它们就不会出现在 `docker commit` 捕获的任何内容里（任务 00，E6）。
+
 ## Considered Options
 
 - 像 E2B 那样，在构建 Template 时往每个镜像里装一个 init 系统（systemd）：init 是大家熟悉的，但要改写镜像，违背"官方镜像不用改"（ADR 0003）。

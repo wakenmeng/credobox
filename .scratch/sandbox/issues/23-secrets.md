@@ -8,6 +8,7 @@
 Per ADR 0006:
 - `POST /v1/secrets` with a name, value and **required** destination hosts; `GET` never returns the value
 - At Sandbox creation, map environment variables to Secrets; inside the Sandbox the variable holds a placeholder
+- Placeholders and proxy variables are delivered in Init, never in the container config (ADR 0008)
 - The Egress Proxy terminates TLS for a Secret's bound hosts using a per-Sandbox CA, and swaps the placeholder for the real value in request headers only
 - The CA reaches the Sandbox through a read-only mount and `SSL_CERT_FILE`-style variables, delivered in Init; it is never written into the system trust store
 - Fail closed: a placeholder that can't be resolved blocks the request

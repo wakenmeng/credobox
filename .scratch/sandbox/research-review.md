@@ -67,3 +67,15 @@ Reports:
 ## 5. Before ticket 01: experiments on the Mac
 
 The Docker/gVisor report's §5 lists experiments E1–E8 that docs cannot settle (unix socket over VirtioFS, reaching 127.0.0.1-only Mac services, whether `--storage-opt size` is silently ignored, and others). Running them first, as a `/prototype`, turns phase 1's foundations from "documented" into "measured".
+
+## 6. Ticket 00 results (measured on this Mac)
+
+Full results: `prototype/mac-experiments/RESULTS.md` on the branch `prototype/mac-experiments`.
+
+| Research claim | Measured on Docker Desktop 4.87.0 | Decision |
+|---|---|---|
+| Unix sockets cross VirtioFS from 4.86 | **No**, in neither direction | **Decided:** the phase 1 channel is a long-lived `docker exec -i` stream (0.25 ms per round trip) → ADR 0002, spec §3/§7, ticket 01 |
+| Committing with an explicit config strips Env and Entrypoint | **No**: Docker merges the config | **Decided:** platform environment variables never enter the container config; Init delivers them; Template records keep the original image config → ADRs 0006/0008, spec §7, tickets 01/13/22/23 |
+| `--storage-opt size` is silently ignored | Rejected with an explicit error (classic overlay2 on ext4) | Spec §7 wording corrected; soft limit unchanged |
+| `--internal` + `isolated` is needed | Confirmed, and `--internal` alone still exposes the VM's own listeners | No change |
+| Freeze, minimal capability set, non-dumpable | Confirmed | No change |
