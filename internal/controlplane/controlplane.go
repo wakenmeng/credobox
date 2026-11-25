@@ -147,6 +147,14 @@ func (cp *ControlPlane) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := cp.store.markRunning(context.WithoutCancel(r.Context()), sb.ID, res.DataEndpoint); err != nil {
+		// The client never gets the Access Token, so nobody can use this
+		// Sandbox: remove it now rather than leave it running. The record
+		// stays Starting, which reconciliation (ticket 10) settles.
+		bg, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if _, derr := cp.host.DestroySandbox(bg, &hav1.DestroySandboxRequest{SandboxId: sb.ID}); derr != nil {
+			log.Printf("controlplane: destroying sandbox %s after a failed write: %v", sb.ID, derr)
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

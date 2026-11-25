@@ -1,9 +1,10 @@
 // Command guestagent is the Guest Agent. The platform bind-mounts it
 // read-only into every Sandbox (ADR 0003); the image never contains it.
 //
-//	guestagent init [-- entrypoint args...]
+//	guestagent init [--user USER] [-- entrypoint args...]
 //	    Run as PID 1: serve the GuestAgent gRPC service on a root-only unix
-//	    socket, reap orphans, and start the image's entrypoint after Init.
+//	    socket, reap orphans, and start the image's entrypoint after Init,
+//	    as the image's USER.
 //	guestagent bridge
 //	    Relay stdin/stdout to that socket. The Host Agent runs this through
 //	    one long-lived `docker exec -i` per Sandbox (ADR 0002).
@@ -28,13 +29,16 @@ const SocketPath = "/run/gpubox/guestagent.sock"
 func main() {
 	log.SetFlags(0)
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: guestagent init [-- cmd...] | guestagent bridge")
+		fmt.Fprintln(os.Stderr, "usage: guestagent init [--user USER] [-- cmd...] | guestagent bridge")
 		os.Exit(2)
 	}
 	var err error
 	switch os.Args[1] {
 	case "init":
-		err = runInit(workloadArgs(os.Args[2:]))
+		var opts guestagent.Options
+		if opts, err = initOptions(os.Args[2:]); err == nil {
+			err = runInit(opts)
+		}
 	case "bridge":
 		err = runBridge()
 	default:
@@ -45,14 +49,28 @@ func main() {
 	}
 }
 
-func workloadArgs(args []string) []string {
-	if len(args) > 0 && args[0] == "--" {
-		return args[1:]
+// initOptions parses `[--user USER] [-- entrypoint args...]`.
+func initOptions(args []string) (guestagent.Options, error) {
+	var opts guestagent.Options
+	for len(args) > 0 {
+		switch args[0] {
+		case "--user":
+			if len(args) < 2 {
+				return opts, fmt.Errorf("--user needs a value")
+			}
+			opts.User, args = args[1], args[2:]
+		case "--":
+			opts.Workload = args[1:]
+			return opts, nil
+		default:
+			opts.Workload = args
+			return opts, nil
+		}
 	}
-	return args
+	return opts, nil
 }
 
-func runInit(workload []string) error {
+func runInit(opts guestagent.Options) error {
 	if os.Getpid() != 1 {
 		log.Printf("guestagent: warning: running as pid %d, not PID 1", os.Getpid())
 	}
@@ -72,7 +90,7 @@ func runInit(workload []string) error {
 	if err := os.Chmod(SocketPath, 0o600); err != nil {
 		return err
 	}
-	agent := guestagent.New(guestagent.Options{Workload: workload})
+	agent := guestagent.New(opts)
 	go func() {
 		sig := <-signals
 		if p := agent.Workload(); p != nil {

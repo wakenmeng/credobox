@@ -24,6 +24,9 @@ type execResponse struct {
 	Stdout   string `json:"stdout"`
 	Stderr   string `json:"stderr"`
 	ExitCode int32  `json:"exit_code"`
+	// Each stream keeps its first 1 MiB; these say whether more was dropped.
+	StdoutTruncated bool `json:"stdout_truncated"`
+	StderrTruncated bool `json:"stderr_truncated"`
 }
 
 func (h *HostAgent) handleExec(w http.ResponseWriter, r *http.Request) {
@@ -49,7 +52,10 @@ func (h *HostAgent) handleExec(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "guest agent: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, execResponse{Stdout: string(res.Stdout), Stderr: string(res.Stderr), ExitCode: res.ExitCode})
+	writeJSON(w, http.StatusOK, execResponse{
+		Stdout: string(res.Stdout), Stderr: string(res.Stderr), ExitCode: res.ExitCode,
+		StdoutTruncated: res.StdoutTruncated, StderrTruncated: res.StderrTruncated,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

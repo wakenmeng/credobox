@@ -6,6 +6,8 @@
 
 **修订（2026-11-21，任务 00 之后）。** 容器配置里只有镜像自己的配置，加上作为入口的 Guest Agent。所有平台相关的环境变量（Secret 占位符、代理环境变量、CA 路径）都在 Init 中下发，由 Guest Agent 加到它启动的进程上。镜像原始的 Entrypoint、Cmd、Env、User 和 WorkingDir 从 Template 记录里读取，而不是从容器配置里读取。这样它们就不会出现在 `docker commit` 捕获的任何内容里（任务 00，E6）。
 
+**修订（2026-11-21，任务 01 审查之后）：第一次 Init 是 trust on first use（首次信任）。** Guest Agent 收到第一次 Init 时不要求 token，直接采用这次 Init 带来的 token。之后的每次 Init 都必须带上当前的 token。这样做安全，只靠两个前提：（1）第一次 Init 走的通道只有 Host Agent 能连上（在 Docker 里是 0700 tmpfs 上的一个 0600 socket，通过 `docker exec --user 0:0` 进入）；（2）第一次 Init 之前没有任何用户进程在运行，因为 Guest Agent 要等 Init 之后才启动镜像的 entrypoint。每换一种 Runtime，都要重新确认这两点。到了 Firecracker，通道换成 vsock：在 Init 之前，用户代码不能连上 vsock 的 guest 端；快照恢复和 Fork 都是*重新* Init，必须带当前的 token，永远不是第一次 Init。
+
 ## Considered Options
 
 - 像 E2B 那样，在构建 Template 时往每个镜像里装一个 init 系统（systemd）：init 是大家熟悉的，但要改写镜像，违背"官方镜像不用改"（ADR 0003）。

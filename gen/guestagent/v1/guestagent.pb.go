@@ -152,12 +152,16 @@ func (x *ExecRequest) GetCommand() string {
 }
 
 type ExecResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Stdout        []byte                 `protobuf:"bytes,1,opt,name=stdout,proto3" json:"stdout,omitempty"`
-	Stderr        []byte                 `protobuf:"bytes,2,opt,name=stderr,proto3" json:"stderr,omitempty"`
-	ExitCode      int32                  `protobuf:"varint,3,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// At most MaxOutputBytes (1 MiB) each; the rest is dropped.
+	Stdout   []byte `protobuf:"bytes,1,opt,name=stdout,proto3" json:"stdout,omitempty"`
+	Stderr   []byte `protobuf:"bytes,2,opt,name=stderr,proto3" json:"stderr,omitempty"`
+	ExitCode int32  `protobuf:"varint,3,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	// Set when the stream was longer than the cap and was cut.
+	StdoutTruncated bool `protobuf:"varint,4,opt,name=stdout_truncated,json=stdoutTruncated,proto3" json:"stdout_truncated,omitempty"`
+	StderrTruncated bool `protobuf:"varint,5,opt,name=stderr_truncated,json=stderrTruncated,proto3" json:"stderr_truncated,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ExecResponse) Reset() {
@@ -211,6 +215,20 @@ func (x *ExecResponse) GetExitCode() int32 {
 	return 0
 }
 
+func (x *ExecResponse) GetStdoutTruncated() bool {
+	if x != nil {
+		return x.StdoutTruncated
+	}
+	return false
+}
+
+func (x *ExecResponse) GetStderrTruncated() bool {
+	if x != nil {
+		return x.StderrTruncated
+	}
+	return false
+}
+
 var File_guestagent_v1_guestagent_proto protoreflect.FileDescriptor
 
 const file_guestagent_v1_guestagent_proto_rawDesc = "" +
@@ -220,11 +238,13 @@ const file_guestagent_v1_guestagent_proto_rawDesc = "" +
 	"\x05token\x18\x01 \x01(\tR\x05token\"\x0e\n" +
 	"\fInitResponse\"'\n" +
 	"\vExecRequest\x12\x18\n" +
-	"\acommand\x18\x01 \x01(\tR\acommand\"[\n" +
+	"\acommand\x18\x01 \x01(\tR\acommand\"\xb1\x01\n" +
 	"\fExecResponse\x12\x16\n" +
 	"\x06stdout\x18\x01 \x01(\fR\x06stdout\x12\x16\n" +
 	"\x06stderr\x18\x02 \x01(\fR\x06stderr\x12\x1b\n" +
-	"\texit_code\x18\x03 \x01(\x05R\bexitCode2\xaa\x01\n" +
+	"\texit_code\x18\x03 \x01(\x05R\bexitCode\x12)\n" +
+	"\x10stdout_truncated\x18\x04 \x01(\bR\x0fstdoutTruncated\x12)\n" +
+	"\x10stderr_truncated\x18\x05 \x01(\bR\x0fstderrTruncated2\xaa\x01\n" +
 	"\n" +
 	"GuestAgent\x12M\n" +
 	"\x04Init\x12!.gpubox.guestagent.v1.InitRequest\x1a\".gpubox.guestagent.v1.InitResponse\x12M\n" +

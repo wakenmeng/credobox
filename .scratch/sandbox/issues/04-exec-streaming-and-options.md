@@ -11,6 +11,7 @@
 
 ## Acceptance
 - [ ] Output arrives continuously while the command runs, not all at once at the end
+- [ ] A streamed Exec has no output cap; the buffered (non-streaming) response keeps its 1 MiB per stream cap and the `*_truncated` flags from ticket 01
 - [ ] On timeout the process is killed and the result is clearly marked "timed out"
 - [ ] If the client disconnects midway, the command inside the Sandbox is ended, leaving no orphan processes
 - [ ] `whoami` prints `user` by default

@@ -12,5 +12,6 @@ Host Agent 定期上报本机实际在跑的 Sandbox，Control Plane 拿它和�
 - [ ] 手动起一个带平台标签的容器，它会被清理掉
 - [ ] Host Agent 重启后，能重新接管还在跑的 Sandbox，不会误杀
 - [ ] Control Plane 先写入 Starting 再调用 Host，每个容器都带有生命周期 ID 标签
+- [ ] 停在 Starting 的记录（比如 Host 已经启动了 Sandbox，但写入 Running 失败）会被收尾：如果 Host 上没有这个 Sandbox，就标记为 Terminated，原因 `failed`
 - [ ] 陌生容器先给一段宽限期，再销毁
 - [ ] 数据库读取失败时，这一轮跳过这台 Host，而不是把它的 Sandbox 都销毁

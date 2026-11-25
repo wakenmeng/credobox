@@ -58,6 +58,9 @@ func containerName(sandboxID string) string { return "gpubox-" + sandboxID }
 type imageConfig struct {
 	Entrypoint []string
 	Cmd        []string
+	// User is the image's USER. PID 1 must be root, so the container runs
+	// as root and the Guest Agent applies User to the entrypoint instead.
+	User string
 }
 
 func (r *Runtime) Start(ctx context.Context, spec runtime.StartSpec) error {
@@ -79,8 +82,12 @@ func (r *Runtime) Start(ctx context.Context, spec runtime.StartSpec) error {
 		"--mount", "type=bind,source=" + r.cfg.GuestAgentDir + ",target=" + guestAgentMount + ",readonly",
 		"--tmpfs", guestAgentRunDir + ":rw,nosuid,nodev,noexec,mode=0700",
 		spec.TemplateImage,
-		"init", "--",
+		"init",
 	}
+	if img.User != "" {
+		args = append(args, "--user", img.User)
+	}
+	args = append(args, "--")
 	args = append(args, img.Entrypoint...)
 	args = append(args, img.Cmd...)
 	if _, err := docker(ctx, args...); err != nil {
@@ -89,7 +96,7 @@ func (r *Runtime) Start(ctx context.Context, spec runtime.StartSpec) error {
 	return nil
 }
 
-// templateConfig reads the image's original Entrypoint and Cmd, pulling the
+// templateConfig reads the image's original Entrypoint, Cmd and User, pulling the
 // image first if it is not on the Host. Until Templates are registered
 // (ticket 13), the image itself is the Template record.
 func (r *Runtime) templateConfig(ctx context.Context, image string) (imageConfig, error) {

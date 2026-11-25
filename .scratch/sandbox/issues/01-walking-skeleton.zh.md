@@ -39,17 +39,21 @@ Docker 容器到底是什么（namespace 加 cgroups，再加一层文件系统�
 | 非 0 退出码如实带回 | `TestNonZeroExitCodeComesBackFaithfully` |
 | `docker inspect` 里没有平台环境变量 | `TestContainerConfigHasNoPlatformEnvironment`（容器的 Env 和镜像的完全一样） |
 
-另外还测了：镜像的 Entrypoint 和 Cmd 在 Init 之后启动，是 PID 1 的子进程；PID 1 会回收孤儿进程（`e2e`）。Guest Agent 的 gRPC 服务单独测试（`internal/guestagent`）：Init 之前的 Exec 被拒绝，不带当前 token 的 Exec 被拒绝。上一次 Init 的 token 会被拒绝，重新 Init 必须带上当前的 token，这样 Sandbox 里的代码没法换上自己的 token。
+另外还测了：镜像的 Entrypoint 和 Cmd 在 Init 之后启动，是 PID 1 的子进程；PID 1 会回收孤儿进程；entrypoint 以镜像的 USER 运行；8 MiB 的输出被截到 1 MiB 并标为已截断（`e2e`）。USER 的解析按 Docker 的规则（`internal/guestagent` `TestResolveUserLikeDocker`）。Guest Agent 的 gRPC 服务单独测试（`internal/guestagent`）：Init 之前的 Exec 被拒绝，不带当前 token 的 Exec 被拒绝。上一次 Init 的 token 会被拒绝，重新 Init 必须带上当前的 token，这样 Sandbox 里的代码没法换上自己的 token。
 
 实现时做的决定：
 - **网络：暂时用 `--network none`。** `docker exec -i` 通道不需要网络。**任务 12 会把它换成** Sandbox 自己的、网关模式为 `isolated` 的 `--internal` 网络。
 - Docker Runtime 调用 `docker` 命令行（不用 Go SDK），每一步都是你可以手动运行的命令。
 - Access Token 由 Control Plane 生成，只返回一次，只保存它的 SHA-256 哈希。Host Agent 只在内存里保存这个哈希；Host Agent 重启后就没了，要等对账（任务 10）。
 - 终止原因是 `deleted`、`failed` 和 `start_timeout`，各自带一段说明（GLOSSARY、spec §5）。
-- 在有 Template 之前（任务 13），Template 记录就是镜像配置，创建时用 `docker image inspect` 读取。镜像的 Entrypoint 和 Cmd 变成 Guest Agent 的参数（`guestagent init -- …`）；Env 和 WorkingDir 来自镜像自己的配置。
+- 在有 Template 之前（任务 13），Template 记录就是镜像配置，创建时用 `docker image inspect` 读取。镜像的 Entrypoint 和 Cmd 变成 Guest Agent 的参数（`guestagent init --user <USER> -- …`）；Env 和 WorkingDir 来自镜像自己的配置。
+- **entrypoint 以镜像的 USER 运行**（审查后补上）。PID 1 必须是 root，所以容器用 `--user 0:0` 启动，由 Guest Agent 自己按 Docker 的规则应用 USER：在镜像自己的 `/etc/passwd` 和 `/etc/group` 里查用户名或 uid，设置附加组和 HOME。在任务 04 之前，Exec 仍然以 root 运行。
+- **Exec 的 stdout 和 stderr 各最多保留 1 MiB**（审查后补上）。超出的部分照样读出来、但丢掉，并用 `stdout_truncated` / `stderr_truncated` 标出来。没有这个上限时，输出超过 gRPC 默认 4 MB 的单条消息上限，整条 Exec 就会失败；输出无穷无尽的命令（`yes`）还可能把 Guest Agent，也就是 PID 1，内存撑爆。流式输出（任务 04）会取消这个上限。
+- 如果 Host 已经把 Sandbox 启动了、但写入 Running 失败，Control Plane 会立刻把它销毁（反正没人拿到它的 Access Token）。记录停在 Starting，交给对账（任务 10）。
 - Guest Agent 的 socket 是 `/run/gpubox/guestagent.sock`（0600），放在权限 0700 的 tmpfs 上，`docker commit` 永远不会把它带进去。
+- Host Agent 启动时会删掉上次运行留下的旧控制 socket，但如果那个路径上不是 socket，就拒绝删除并报错（`internal/hostagent` 的测试）。
 
 留给后续任务：
-- 镜像的 USER 还没有生效：entrypoint 和 Exec 都以 root 运行（Exec 默认用 `user` 是任务 04，加固后的用户设置是任务 16）。
+- Exec 以 root 运行（Exec 默认用 `user` 是任务 04，加固后的用户设置是任务 16）。
 - Exec 用 `/bin/sh -c` 运行。后台子进程如果一直占着 stdout，Exec 就不会结束；Exec 被取消时只杀掉它的 shell。进程组放在任务 04。
 - macOS 上 unix socket 路径最多 103 字节，所以 `-socket` 要短（默认放在 `$TMPDIR` 下就够短）。

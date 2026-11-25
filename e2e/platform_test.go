@@ -121,9 +121,10 @@ type sandbox struct {
 }
 
 type execResult struct {
-	Stdout   string `json:"stdout"`
-	Stderr   string `json:"stderr"`
-	ExitCode int    `json:"exit_code"`
+	Stdout          string `json:"stdout"`
+	Stderr          string `json:"stderr"`
+	ExitCode        int    `json:"exit_code"`
+	StdoutTruncated bool   `json:"stdout_truncated"`
 }
 
 func call(t *testing.T, method, url, token string, body, out any) int {
@@ -370,10 +371,16 @@ func buildTemplate(t *testing.T, name, dockerfile string) string {
 	return name
 }
 
+// waitForFile is a shell prefix that waits up to 5 s for path to exist: the
+// workload starts right after Init, so an Exec can get there first.
+func waitForFile(path string) string {
+	return "for i in $(seq 50); do [ -e " + path + " ] && break; sleep 0.1; done; "
+}
+
 func TestImageEntrypointAndCmdRunInTheSandbox(t *testing.T) {
 	template := buildTemplate(t, "gpubox-test/workload:e2e", `FROM `+testTemplate+`
 ENTRYPOINT ["/bin/sh", "-c"]
-CMD ["echo started > /tmp/workload-started; exec sleep 3600"]
+CMD ["echo started > /tmp/w && mv /tmp/w /tmp/workload-started; exec sleep 3600"]
 `)
 	api := startPlatform(t, platformOptions{})
 	sb, code := createSandbox(t, api, template)
@@ -383,7 +390,7 @@ CMD ["echo started > /tmp/workload-started; exec sleep 3600"]
 	t.Cleanup(func() { call(t, "DELETE", api+"/v1/sandboxes/"+sb.ID, "", nil, nil) })
 
 	// The entrypoint was started by the Guest Agent and is still its child.
-	res, _ := execIn(t, sb, sb.AccessToken, "cat /tmp/workload-started && pgrep -P 1 -x sleep >/dev/null && echo child-of-pid1")
+	res, _ := execIn(t, sb, sb.AccessToken, waitForFile("/tmp/workload-started")+"cat /tmp/workload-started && pgrep -P 1 -x sleep >/dev/null && echo child-of-pid1")
 
 	if res.Stdout != "started\nchild-of-pid1\n" {
 		t.Fatalf("got %+v, want the entrypoint's marker and its sleep under PID 1", res)
@@ -402,5 +409,41 @@ func TestGuestAgentReapsOrphans(t *testing.T) {
 
 	if strings.TrimSpace(res.Stdout) != "0" {
 		t.Fatalf("zombies in the Sandbox: %q, want 0", res.Stdout)
+	}
+}
+
+func TestImageEntrypointRunsAsTheImageUser(t *testing.T) {
+	template := buildTemplate(t, "gpubox-test/user:e2e", `FROM `+testTemplate+`
+RUN addgroup -g 1234 app && adduser -D -u 1234 -G app app && addgroup app wheel
+USER app
+CMD ["/bin/sh", "-c", "{ id; echo $HOME; } > /tmp/w && mv /tmp/w /tmp/workload-id; exec sleep 3600"]
+`)
+	api := startPlatform(t, platformOptions{})
+	sb, code := createSandbox(t, api, template)
+	if code != http.StatusCreated {
+		t.Fatalf("create: HTTP %d, %+v", code, sb)
+	}
+	t.Cleanup(func() { call(t, "DELETE", api+"/v1/sandboxes/"+sb.ID, "", nil, nil) })
+
+	res, _ := execIn(t, sb, sb.AccessToken, waitForFile("/tmp/workload-id")+"cat /tmp/workload-id; stat -c %u /proc/1/status")
+
+	// The entrypoint runs as the image's USER, with Docker's HOME and groups;
+	// PID 1 (the Guest Agent) stays root.
+	want := "uid=1234(app) gid=1234(app) groups=10(wheel),1234(app)\n/home/app\n0\n"
+	if res.Stdout != want {
+		t.Fatalf("got %q, want %q", res.Stdout, want)
+	}
+}
+
+func TestLargeExecOutputIsTruncatedNotAnError(t *testing.T) {
+	api := startPlatform(t, platformOptions{})
+	sb := createRunning(t, api)
+
+	// 8 MiB: twice gRPC's default 4 MB message limit.
+	res, code := execIn(t, sb, sb.AccessToken, "head -c 8388608 /dev/zero")
+
+	if code != http.StatusOK || len(res.Stdout) != 1<<20 || !res.StdoutTruncated || res.ExitCode != 0 {
+		t.Fatalf("HTTP %d, %d bytes, truncated=%v, exit=%d; want 200, 1 MiB, true, 0",
+			code, len(res.Stdout), res.StdoutTruncated, res.ExitCode)
 	}
 }

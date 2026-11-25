@@ -78,7 +78,9 @@ func Start(cfg Config) (*HostAgent, error) {
 	if err := os.MkdirAll(filepath.Dir(cfg.SocketPath), 0o700); err != nil {
 		return nil, err
 	}
-	os.Remove(cfg.SocketPath)
+	if err := removeStaleSocket(cfg.SocketPath); err != nil {
+		return nil, err
+	}
 	ctl, err := net.Listen("unix", cfg.SocketPath)
 	if err != nil {
 		return nil, fmt.Errorf("listen on control socket: %w", err)
@@ -101,6 +103,24 @@ func Start(cfg Config) (*HostAgent, error) {
 	h.data = &http.Server{Handler: h.dataProxy(), ReadHeaderTimeout: 10 * time.Second}
 	go h.data.Serve(dataLis)
 	return h, nil
+}
+
+// removeStaleSocket removes the socket file a previous Host Agent left at
+// path (a unix socket's file outlives its process, and Listen fails while it
+// is there). It refuses to remove anything that is not a socket, so a
+// mistyped path can't delete someone's file.
+func removeStaleSocket(path string) error {
+	fi, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("control socket path %s exists and is not a socket; not removing it", path)
+	}
+	return os.Remove(path)
 }
 
 // DataEndpoint is the base URL of this Host's data proxy.

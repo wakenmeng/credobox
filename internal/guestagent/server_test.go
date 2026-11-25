@@ -131,3 +131,24 @@ func TestReInitWithoutCurrentTokenIsRefused(t *testing.T) {
 		t.Fatalf("re-Init without the current token: got %v, want Unauthenticated", err)
 	}
 }
+
+func TestExecOutputIsCappedAndMarkedTruncated(t *testing.T) {
+	ga := startGuestAgent(t)
+	if _, err := ga.Init(ctx(t), &gav1.InitRequest{Token: "t1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1.5 MiB on stdout: more than the cap, so the rest must be dropped while
+	// the command still runs to completion.
+	res, err := ga.Exec(withToken(ctx(t), "t1"), &gav1.ExecRequest{Command: "head -c 1572864 /dev/zero; echo small >&2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(res.Stdout) != guestagent.MaxOutputBytes || !res.StdoutTruncated {
+		t.Errorf("stdout: %d bytes, truncated=%v; want %d, true", len(res.Stdout), res.StdoutTruncated, guestagent.MaxOutputBytes)
+	}
+	if string(res.Stderr) != "small\n" || res.StderrTruncated || res.ExitCode != 0 {
+		t.Errorf("stderr=%q truncated=%v exit=%d; want \"small\\n\", false, 0", res.Stderr, res.StderrTruncated, res.ExitCode)
+	}
+}

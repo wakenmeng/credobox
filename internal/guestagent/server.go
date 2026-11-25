@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -29,7 +30,17 @@ type Options struct {
 	// Guest Agent starts it once the first Init completes, so no user process
 	// runs before the Sandbox has its identity (ADR 0008). Empty means none.
 	Workload []string
+	// User is the image's USER, which the workload runs as. Empty means root.
+	User string
+	// EtcDir is where User is looked up (passwd, group). Default /etc.
+	EtcDir string
 }
+
+// MaxOutputBytes caps what one Exec keeps of stdout, and of stderr. The rest
+// is read and dropped, so the command still runs to completion and the Guest
+// Agent's memory stays bounded; the response says what was cut. Streaming
+// (ticket 04) lifts the cap.
+const MaxOutputBytes = 1 << 20
 
 // Agent serves the GuestAgent gRPC service.
 type Agent struct {
@@ -81,13 +92,27 @@ func (a *Agent) Init(ctx context.Context, req *gav1.InitRequest) (*gav1.InitResp
 	return &gav1.InitResponse{}, nil
 }
 
-// startWorkload starts the image's own entrypoint with the image's Env and
-// WorkingDir, which it inherits from PID 1. Its output goes to PID 1's, so
-// `docker logs` shows it. When it exits the Sandbox keeps running: many
-// images' default command (a shell, a REPL) exits at once without a TTY.
+// startWorkload starts the image's own entrypoint as the image's USER, with
+// the image's Env and WorkingDir, which it inherits from PID 1. PID 1 itself
+// runs as root (the Runtime starts it with --user 0:0), so the USER is applied
+// here, the way Docker would have. Its output goes to PID 1's, so `docker
+// logs` shows it. When it exits the Sandbox keeps running: many images'
+// default command (a shell, a REPL) exits at once without a TTY.
 func (a *Agent) startWorkload() error {
+	etc := a.opts.EtcDir
+	if etc == "" {
+		etc = "/etc"
+	}
+	id, err := resolveUser(a.opts.User, etc)
+	if err != nil {
+		return err
+	}
 	cmd := exec.Command(a.opts.Workload[0], a.opts.Workload[1:]...)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if id.cred != nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: id.cred}
+		cmd.Env = withHome(os.Environ(), id.home)
+	}
 	exited, err := start(cmd)
 	if err != nil {
 		return err
@@ -98,6 +123,17 @@ func (a *Agent) startWorkload() error {
 		log.Printf("guestagent: workload %q exited with code %d", a.opts.Workload, exitCode(ws))
 	}()
 	return nil
+}
+
+// withHome sets HOME, which Docker derives from USER and PID 1 got as root's.
+func withHome(env []string, home string) []string {
+	out := []string{"HOME=" + home}
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, "HOME=") {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 // Workload returns the running workload process, or nil.
@@ -136,11 +172,11 @@ func (a *Agent) Exec(ctx context.Context, req *gav1.ExecRequest) (*gav1.ExecResp
 	}
 
 	var wg sync.WaitGroup
-	var stdout, stderr bytes.Buffer
+	stdout, stderr := &cappedBuffer{max: MaxOutputBytes}, &cappedBuffer{max: MaxOutputBytes}
 	for _, p := range []struct {
 		r   *os.File
-		buf *bytes.Buffer
-	}{{outR, &stdout}, {errR, &stderr}} {
+		buf *cappedBuffer
+	}{{outR, stdout}, {errR, stderr}} {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -161,10 +197,29 @@ func (a *Agent) Exec(ctx context.Context, req *gav1.ExecRequest) (*gav1.ExecResp
 	}
 	wg.Wait()
 	return &gav1.ExecResponse{
-		Stdout:   stdout.Bytes(),
-		Stderr:   stderr.Bytes(),
-		ExitCode: int32(exitCode(ws)),
+		Stdout:          stdout.buf.Bytes(),
+		Stderr:          stderr.buf.Bytes(),
+		ExitCode:        int32(exitCode(ws)),
+		StdoutTruncated: stdout.truncated,
+		StderrTruncated: stderr.truncated,
 	}, nil
+}
+
+// cappedBuffer keeps the first max bytes written to it and drops the rest.
+type cappedBuffer struct {
+	max       int
+	buf       bytes.Buffer
+	truncated bool
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if room := b.max - b.buf.Len(); len(p) > room {
+		b.buf.Write(p[:max(room, 0)])
+		b.truncated = true
+	} else {
+		b.buf.Write(p)
+	}
+	return len(p), nil
 }
 
 // authorize admits a call only after Init, and only if it carries this
