@@ -28,7 +28,11 @@ const (
 type InitRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// A fresh random token for this incarnation. Kept only in memory.
-	Token         string `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	Token string `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	// Environment variables added to every process the Guest Agent starts:
+	// the Sandbox's defaults, given at create. They never go into the
+	// container config (ADR 0008).
+	Env           map[string]string `protobuf:"bytes,2,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -70,6 +74,13 @@ func (x *InitRequest) GetToken() string {
 	return ""
 }
 
+func (x *InitRequest) GetEnv() map[string]string {
+	if x != nil {
+		return x.Env
+	}
+	return nil
+}
+
 type InitResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -109,9 +120,22 @@ func (*InitResponse) Descriptor() ([]byte, []int) {
 type ExecRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Run with /bin/sh -c.
-	Command       string `protobuf:"bytes,1,opt,name=command,proto3" json:"command,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Command string `protobuf:"bytes,1,opt,name=command,proto3" json:"command,omitempty"`
+	// An account in the image's /etc/passwd, by name or uid. Empty means
+	// "user" (ADR 0009).
+	User string `protobuf:"bytes,2,opt,name=user,proto3" json:"user,omitempty"`
+	// Empty means the account's home directory, or / if it has none.
+	Cwd string `protobuf:"bytes,3,opt,name=cwd,proto3" json:"cwd,omitempty"`
+	// Added on top of the image's and the Sandbox's environment.
+	Env map[string]string `protobuf:"bytes,4,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// 0 means no timeout.
+	TimeoutMs int64 `protobuf:"varint,5,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
+	// How much of stdout, and of stderr, to send. The rest is read and
+	// dropped, so the command still runs to completion and memory stays
+	// bounded. 0 means no cap (streaming).
+	MaxOutputBytes int64 `protobuf:"varint,6,opt,name=max_output_bytes,json=maxOutputBytes,proto3" json:"max_output_bytes,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ExecRequest) Reset() {
@@ -151,33 +175,68 @@ func (x *ExecRequest) GetCommand() string {
 	return ""
 }
 
-type ExecResponse struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// At most MaxOutputBytes (1 MiB) each; the rest is dropped.
-	Stdout   []byte `protobuf:"bytes,1,opt,name=stdout,proto3" json:"stdout,omitempty"`
-	Stderr   []byte `protobuf:"bytes,2,opt,name=stderr,proto3" json:"stderr,omitempty"`
-	ExitCode int32  `protobuf:"varint,3,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
-	// Set when the stream was longer than the cap and was cut.
-	StdoutTruncated bool `protobuf:"varint,4,opt,name=stdout_truncated,json=stdoutTruncated,proto3" json:"stdout_truncated,omitempty"`
-	StderrTruncated bool `protobuf:"varint,5,opt,name=stderr_truncated,json=stderrTruncated,proto3" json:"stderr_truncated,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+func (x *ExecRequest) GetUser() string {
+	if x != nil {
+		return x.User
+	}
+	return ""
 }
 
-func (x *ExecResponse) Reset() {
-	*x = ExecResponse{}
+func (x *ExecRequest) GetCwd() string {
+	if x != nil {
+		return x.Cwd
+	}
+	return ""
+}
+
+func (x *ExecRequest) GetEnv() map[string]string {
+	if x != nil {
+		return x.Env
+	}
+	return nil
+}
+
+func (x *ExecRequest) GetTimeoutMs() int64 {
+	if x != nil {
+		return x.TimeoutMs
+	}
+	return 0
+}
+
+func (x *ExecRequest) GetMaxOutputBytes() int64 {
+	if x != nil {
+		return x.MaxOutputBytes
+	}
+	return 0
+}
+
+type ExecEvent struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Event:
+	//
+	//	*ExecEvent_Started
+	//	*ExecEvent_Stdout
+	//	*ExecEvent_Stderr
+	//	*ExecEvent_Exited
+	Event         isExecEvent_Event `protobuf_oneof:"event"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExecEvent) Reset() {
+	*x = ExecEvent{}
 	mi := &file_guestagent_v1_guestagent_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ExecResponse) String() string {
+func (x *ExecEvent) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ExecResponse) ProtoMessage() {}
+func (*ExecEvent) ProtoMessage() {}
 
-func (x *ExecResponse) ProtoReflect() protoreflect.Message {
+func (x *ExecEvent) ProtoReflect() protoreflect.Message {
 	mi := &file_guestagent_v1_guestagent_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -189,40 +248,192 @@ func (x *ExecResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ExecResponse.ProtoReflect.Descriptor instead.
-func (*ExecResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use ExecEvent.ProtoReflect.Descriptor instead.
+func (*ExecEvent) Descriptor() ([]byte, []int) {
 	return file_guestagent_v1_guestagent_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *ExecResponse) GetStdout() []byte {
+func (x *ExecEvent) GetEvent() isExecEvent_Event {
 	if x != nil {
-		return x.Stdout
+		return x.Event
 	}
 	return nil
 }
 
-func (x *ExecResponse) GetStderr() []byte {
+func (x *ExecEvent) GetStarted() *Started {
 	if x != nil {
-		return x.Stderr
+		if x, ok := x.Event.(*ExecEvent_Started); ok {
+			return x.Started
+		}
 	}
 	return nil
 }
 
-func (x *ExecResponse) GetExitCode() int32 {
+func (x *ExecEvent) GetStdout() []byte {
+	if x != nil {
+		if x, ok := x.Event.(*ExecEvent_Stdout); ok {
+			return x.Stdout
+		}
+	}
+	return nil
+}
+
+func (x *ExecEvent) GetStderr() []byte {
+	if x != nil {
+		if x, ok := x.Event.(*ExecEvent_Stderr); ok {
+			return x.Stderr
+		}
+	}
+	return nil
+}
+
+func (x *ExecEvent) GetExited() *Exited {
+	if x != nil {
+		if x, ok := x.Event.(*ExecEvent_Exited); ok {
+			return x.Exited
+		}
+	}
+	return nil
+}
+
+type isExecEvent_Event interface {
+	isExecEvent_Event()
+}
+
+type ExecEvent_Started struct {
+	Started *Started `protobuf:"bytes,1,opt,name=started,proto3,oneof"`
+}
+
+type ExecEvent_Stdout struct {
+	Stdout []byte `protobuf:"bytes,2,opt,name=stdout,proto3,oneof"`
+}
+
+type ExecEvent_Stderr struct {
+	Stderr []byte `protobuf:"bytes,3,opt,name=stderr,proto3,oneof"`
+}
+
+type ExecEvent_Exited struct {
+	Exited *Exited `protobuf:"bytes,4,opt,name=exited,proto3,oneof"`
+}
+
+func (*ExecEvent_Started) isExecEvent_Event() {}
+
+func (*ExecEvent_Stdout) isExecEvent_Event() {}
+
+func (*ExecEvent_Stderr) isExecEvent_Event() {}
+
+func (*ExecEvent_Exited) isExecEvent_Event() {}
+
+type Started struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Also the process group ID.
+	Pid           int32 `protobuf:"varint,1,opt,name=pid,proto3" json:"pid,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Started) Reset() {
+	*x = Started{}
+	mi := &file_guestagent_v1_guestagent_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Started) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Started) ProtoMessage() {}
+
+func (x *Started) ProtoReflect() protoreflect.Message {
+	mi := &file_guestagent_v1_guestagent_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Started.ProtoReflect.Descriptor instead.
+func (*Started) Descriptor() ([]byte, []int) {
+	return file_guestagent_v1_guestagent_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *Started) GetPid() int32 {
+	if x != nil {
+		return x.Pid
+	}
+	return 0
+}
+
+type Exited struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The shell's exit code: its exit status, or 128 plus the signal number.
+	ExitCode int32 `protobuf:"varint,1,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	// The timeout passed and the process group was killed.
+	TimedOut bool `protobuf:"varint,2,opt,name=timed_out,json=timedOut,proto3" json:"timed_out,omitempty"`
+	// Set when a stream was longer than max_output_bytes and was cut.
+	StdoutTruncated bool `protobuf:"varint,3,opt,name=stdout_truncated,json=stdoutTruncated,proto3" json:"stdout_truncated,omitempty"`
+	StderrTruncated bool `protobuf:"varint,4,opt,name=stderr_truncated,json=stderrTruncated,proto3" json:"stderr_truncated,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *Exited) Reset() {
+	*x = Exited{}
+	mi := &file_guestagent_v1_guestagent_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Exited) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Exited) ProtoMessage() {}
+
+func (x *Exited) ProtoReflect() protoreflect.Message {
+	mi := &file_guestagent_v1_guestagent_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Exited.ProtoReflect.Descriptor instead.
+func (*Exited) Descriptor() ([]byte, []int) {
+	return file_guestagent_v1_guestagent_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *Exited) GetExitCode() int32 {
 	if x != nil {
 		return x.ExitCode
 	}
 	return 0
 }
 
-func (x *ExecResponse) GetStdoutTruncated() bool {
+func (x *Exited) GetTimedOut() bool {
+	if x != nil {
+		return x.TimedOut
+	}
+	return false
+}
+
+func (x *Exited) GetStdoutTruncated() bool {
 	if x != nil {
 		return x.StdoutTruncated
 	}
 	return false
 }
 
-func (x *ExecResponse) GetStderrTruncated() bool {
+func (x *Exited) GetStderrTruncated() bool {
 	if x != nil {
 		return x.StderrTruncated
 	}
@@ -233,22 +444,42 @@ var File_guestagent_v1_guestagent_proto protoreflect.FileDescriptor
 
 const file_guestagent_v1_guestagent_proto_rawDesc = "" +
 	"\n" +
-	"\x1eguestagent/v1/guestagent.proto\x12\x14gpubox.guestagent.v1\"#\n" +
+	"\x1eguestagent/v1/guestagent.proto\x12\x14gpubox.guestagent.v1\"\x99\x01\n" +
 	"\vInitRequest\x12\x14\n" +
-	"\x05token\x18\x01 \x01(\tR\x05token\"\x0e\n" +
-	"\fInitResponse\"'\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\x12<\n" +
+	"\x03env\x18\x02 \x03(\v2*.gpubox.guestagent.v1.InitRequest.EnvEntryR\x03env\x1a6\n" +
+	"\bEnvEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x0e\n" +
+	"\fInitResponse\"\x8c\x02\n" +
 	"\vExecRequest\x12\x18\n" +
-	"\acommand\x18\x01 \x01(\tR\acommand\"\xb1\x01\n" +
-	"\fExecResponse\x12\x16\n" +
-	"\x06stdout\x18\x01 \x01(\fR\x06stdout\x12\x16\n" +
-	"\x06stderr\x18\x02 \x01(\fR\x06stderr\x12\x1b\n" +
-	"\texit_code\x18\x03 \x01(\x05R\bexitCode\x12)\n" +
-	"\x10stdout_truncated\x18\x04 \x01(\bR\x0fstdoutTruncated\x12)\n" +
-	"\x10stderr_truncated\x18\x05 \x01(\bR\x0fstderrTruncated2\xaa\x01\n" +
+	"\acommand\x18\x01 \x01(\tR\acommand\x12\x12\n" +
+	"\x04user\x18\x02 \x01(\tR\x04user\x12\x10\n" +
+	"\x03cwd\x18\x03 \x01(\tR\x03cwd\x12<\n" +
+	"\x03env\x18\x04 \x03(\v2*.gpubox.guestagent.v1.ExecRequest.EnvEntryR\x03env\x12\x1d\n" +
+	"\n" +
+	"timeout_ms\x18\x05 \x01(\x03R\ttimeoutMs\x12(\n" +
+	"\x10max_output_bytes\x18\x06 \x01(\x03R\x0emaxOutputBytes\x1a6\n" +
+	"\bEnvEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbb\x01\n" +
+	"\tExecEvent\x129\n" +
+	"\astarted\x18\x01 \x01(\v2\x1d.gpubox.guestagent.v1.StartedH\x00R\astarted\x12\x18\n" +
+	"\x06stdout\x18\x02 \x01(\fH\x00R\x06stdout\x12\x18\n" +
+	"\x06stderr\x18\x03 \x01(\fH\x00R\x06stderr\x126\n" +
+	"\x06exited\x18\x04 \x01(\v2\x1c.gpubox.guestagent.v1.ExitedH\x00R\x06exitedB\a\n" +
+	"\x05event\"\x1b\n" +
+	"\aStarted\x12\x10\n" +
+	"\x03pid\x18\x01 \x01(\x05R\x03pid\"\x98\x01\n" +
+	"\x06Exited\x12\x1b\n" +
+	"\texit_code\x18\x01 \x01(\x05R\bexitCode\x12\x1b\n" +
+	"\ttimed_out\x18\x02 \x01(\bR\btimedOut\x12)\n" +
+	"\x10stdout_truncated\x18\x03 \x01(\bR\x0fstdoutTruncated\x12)\n" +
+	"\x10stderr_truncated\x18\x04 \x01(\bR\x0fstderrTruncated2\xa9\x01\n" +
 	"\n" +
 	"GuestAgent\x12M\n" +
-	"\x04Init\x12!.gpubox.guestagent.v1.InitRequest\x1a\".gpubox.guestagent.v1.InitResponse\x12M\n" +
-	"\x04Exec\x12!.gpubox.guestagent.v1.ExecRequest\x1a\".gpubox.guestagent.v1.ExecResponseB'Z%gpubox/gen/guestagent/v1;guestagentv1b\x06proto3"
+	"\x04Init\x12!.gpubox.guestagent.v1.InitRequest\x1a\".gpubox.guestagent.v1.InitResponse\x12L\n" +
+	"\x04Exec\x12!.gpubox.guestagent.v1.ExecRequest\x1a\x1f.gpubox.guestagent.v1.ExecEvent0\x01B'Z%gpubox/gen/guestagent/v1;guestagentv1b\x06proto3"
 
 var (
 	file_guestagent_v1_guestagent_proto_rawDescOnce sync.Once
@@ -262,23 +493,31 @@ func file_guestagent_v1_guestagent_proto_rawDescGZIP() []byte {
 	return file_guestagent_v1_guestagent_proto_rawDescData
 }
 
-var file_guestagent_v1_guestagent_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_guestagent_v1_guestagent_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_guestagent_v1_guestagent_proto_goTypes = []any{
 	(*InitRequest)(nil),  // 0: gpubox.guestagent.v1.InitRequest
 	(*InitResponse)(nil), // 1: gpubox.guestagent.v1.InitResponse
 	(*ExecRequest)(nil),  // 2: gpubox.guestagent.v1.ExecRequest
-	(*ExecResponse)(nil), // 3: gpubox.guestagent.v1.ExecResponse
+	(*ExecEvent)(nil),    // 3: gpubox.guestagent.v1.ExecEvent
+	(*Started)(nil),      // 4: gpubox.guestagent.v1.Started
+	(*Exited)(nil),       // 5: gpubox.guestagent.v1.Exited
+	nil,                  // 6: gpubox.guestagent.v1.InitRequest.EnvEntry
+	nil,                  // 7: gpubox.guestagent.v1.ExecRequest.EnvEntry
 }
 var file_guestagent_v1_guestagent_proto_depIdxs = []int32{
-	0, // 0: gpubox.guestagent.v1.GuestAgent.Init:input_type -> gpubox.guestagent.v1.InitRequest
-	2, // 1: gpubox.guestagent.v1.GuestAgent.Exec:input_type -> gpubox.guestagent.v1.ExecRequest
-	1, // 2: gpubox.guestagent.v1.GuestAgent.Init:output_type -> gpubox.guestagent.v1.InitResponse
-	3, // 3: gpubox.guestagent.v1.GuestAgent.Exec:output_type -> gpubox.guestagent.v1.ExecResponse
-	2, // [2:4] is the sub-list for method output_type
-	0, // [0:2] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	6, // 0: gpubox.guestagent.v1.InitRequest.env:type_name -> gpubox.guestagent.v1.InitRequest.EnvEntry
+	7, // 1: gpubox.guestagent.v1.ExecRequest.env:type_name -> gpubox.guestagent.v1.ExecRequest.EnvEntry
+	4, // 2: gpubox.guestagent.v1.ExecEvent.started:type_name -> gpubox.guestagent.v1.Started
+	5, // 3: gpubox.guestagent.v1.ExecEvent.exited:type_name -> gpubox.guestagent.v1.Exited
+	0, // 4: gpubox.guestagent.v1.GuestAgent.Init:input_type -> gpubox.guestagent.v1.InitRequest
+	2, // 5: gpubox.guestagent.v1.GuestAgent.Exec:input_type -> gpubox.guestagent.v1.ExecRequest
+	1, // 6: gpubox.guestagent.v1.GuestAgent.Init:output_type -> gpubox.guestagent.v1.InitResponse
+	3, // 7: gpubox.guestagent.v1.GuestAgent.Exec:output_type -> gpubox.guestagent.v1.ExecEvent
+	6, // [6:8] is the sub-list for method output_type
+	4, // [4:6] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_guestagent_v1_guestagent_proto_init() }
@@ -286,13 +525,19 @@ func file_guestagent_v1_guestagent_proto_init() {
 	if File_guestagent_v1_guestagent_proto != nil {
 		return
 	}
+	file_guestagent_v1_guestagent_proto_msgTypes[3].OneofWrappers = []any{
+		(*ExecEvent_Started)(nil),
+		(*ExecEvent_Stdout)(nil),
+		(*ExecEvent_Stderr)(nil),
+		(*ExecEvent_Exited)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_guestagent_v1_guestagent_proto_rawDesc), len(file_guestagent_v1_guestagent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

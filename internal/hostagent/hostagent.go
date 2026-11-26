@@ -33,6 +33,7 @@ import (
 
 	gav1 "gpubox/gen/guestagent/v1"
 	hav1 "gpubox/gen/hostagent/v1"
+	"gpubox/internal/envvars"
 	"gpubox/internal/runtime"
 )
 
@@ -142,6 +143,9 @@ func (h *HostAgent) CreateSandbox(ctx context.Context, req *hav1.CreateSandboxRe
 	if req.SandboxId == "" || req.TemplateImage == "" || req.AccessToken == "" {
 		return nil, status.Error(codes.InvalidArgument, "sandbox_id, template_image and access_token are required")
 	}
+	if err := envvars.Validate(req.Env); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 	h.mu.Lock()
 	_, exists := h.sandboxes[req.SandboxId]
 	h.mu.Unlock()
@@ -200,7 +204,7 @@ func (h *HostAgent) startSandbox(ctx context.Context, req *hav1.CreateSandboxReq
 		conn:            conn,
 		guest:           gav1.NewGuestAgentClient(conn),
 	}
-	if _, err := sb.guest.Init(ctx, &gav1.InitRequest{Token: sb.guestToken}, grpc.WaitForReady(true)); err != nil {
+	if _, err := sb.guest.Init(ctx, &gav1.InitRequest{Token: sb.guestToken, Env: req.Env}, grpc.WaitForReady(true)); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("init: %w", err)
 	}

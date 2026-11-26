@@ -30,7 +30,10 @@ type CreateSandboxRequest struct {
 	// The Template's OCI image reference.
 	TemplateImage string `protobuf:"bytes,2,opt,name=template_image,json=templateImage,proto3" json:"template_image,omitempty"`
 	// The Access Token the Host data proxy must require for this Sandbox.
-	AccessToken   string `protobuf:"bytes,3,opt,name=access_token,json=accessToken,proto3" json:"access_token,omitempty"`
+	AccessToken string `protobuf:"bytes,3,opt,name=access_token,json=accessToken,proto3" json:"access_token,omitempty"`
+	// The Sandbox's default environment variables, delivered in Init and
+	// never put in the container config (ADR 0008).
+	Env           map[string]string `protobuf:"bytes,4,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -84,6 +87,13 @@ func (x *CreateSandboxRequest) GetAccessToken() string {
 		return x.AccessToken
 	}
 	return ""
+}
+
+func (x *CreateSandboxRequest) GetEnv() map[string]string {
+	if x != nil {
+		return x.Env
+	}
+	return nil
 }
 
 type CreateSandboxResponse struct {
@@ -215,12 +225,16 @@ var File_hostagent_v1_hostagent_proto protoreflect.FileDescriptor
 
 const file_hostagent_v1_hostagent_proto_rawDesc = "" +
 	"\n" +
-	"\x1chostagent/v1/hostagent.proto\x12\x13gpubox.hostagent.v1\"\x7f\n" +
+	"\x1chostagent/v1/hostagent.proto\x12\x13gpubox.hostagent.v1\"\xfd\x01\n" +
 	"\x14CreateSandboxRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12%\n" +
 	"\x0etemplate_image\x18\x02 \x01(\tR\rtemplateImage\x12!\n" +
-	"\faccess_token\x18\x03 \x01(\tR\vaccessToken\"<\n" +
+	"\faccess_token\x18\x03 \x01(\tR\vaccessToken\x12D\n" +
+	"\x03env\x18\x04 \x03(\v22.gpubox.hostagent.v1.CreateSandboxRequest.EnvEntryR\x03env\x1a6\n" +
+	"\bEnvEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"<\n" +
 	"\x15CreateSandboxResponse\x12#\n" +
 	"\rdata_endpoint\x18\x01 \x01(\tR\fdataEndpoint\"6\n" +
 	"\x15DestroySandboxRequest\x12\x1d\n" +
@@ -243,23 +257,25 @@ func file_hostagent_v1_hostagent_proto_rawDescGZIP() []byte {
 	return file_hostagent_v1_hostagent_proto_rawDescData
 }
 
-var file_hostagent_v1_hostagent_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_hostagent_v1_hostagent_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_hostagent_v1_hostagent_proto_goTypes = []any{
 	(*CreateSandboxRequest)(nil),   // 0: gpubox.hostagent.v1.CreateSandboxRequest
 	(*CreateSandboxResponse)(nil),  // 1: gpubox.hostagent.v1.CreateSandboxResponse
 	(*DestroySandboxRequest)(nil),  // 2: gpubox.hostagent.v1.DestroySandboxRequest
 	(*DestroySandboxResponse)(nil), // 3: gpubox.hostagent.v1.DestroySandboxResponse
+	nil,                            // 4: gpubox.hostagent.v1.CreateSandboxRequest.EnvEntry
 }
 var file_hostagent_v1_hostagent_proto_depIdxs = []int32{
-	0, // 0: gpubox.hostagent.v1.HostAgent.CreateSandbox:input_type -> gpubox.hostagent.v1.CreateSandboxRequest
-	2, // 1: gpubox.hostagent.v1.HostAgent.DestroySandbox:input_type -> gpubox.hostagent.v1.DestroySandboxRequest
-	1, // 2: gpubox.hostagent.v1.HostAgent.CreateSandbox:output_type -> gpubox.hostagent.v1.CreateSandboxResponse
-	3, // 3: gpubox.hostagent.v1.HostAgent.DestroySandbox:output_type -> gpubox.hostagent.v1.DestroySandboxResponse
-	2, // [2:4] is the sub-list for method output_type
-	0, // [0:2] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	4, // 0: gpubox.hostagent.v1.CreateSandboxRequest.env:type_name -> gpubox.hostagent.v1.CreateSandboxRequest.EnvEntry
+	0, // 1: gpubox.hostagent.v1.HostAgent.CreateSandbox:input_type -> gpubox.hostagent.v1.CreateSandboxRequest
+	2, // 2: gpubox.hostagent.v1.HostAgent.DestroySandbox:input_type -> gpubox.hostagent.v1.DestroySandboxRequest
+	1, // 3: gpubox.hostagent.v1.HostAgent.CreateSandbox:output_type -> gpubox.hostagent.v1.CreateSandboxResponse
+	3, // 4: gpubox.hostagent.v1.HostAgent.DestroySandbox:output_type -> gpubox.hostagent.v1.DestroySandboxResponse
+	3, // [3:5] is the sub-list for method output_type
+	1, // [1:3] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_hostagent_v1_hostagent_proto_init() }
@@ -273,7 +289,7 @@ func file_hostagent_v1_hostagent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_hostagent_v1_hostagent_proto_rawDesc), len(file_hostagent_v1_hostagent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

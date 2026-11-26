@@ -88,8 +88,12 @@ A token scoped to one Sandbox, returned when it is created, that authorizes the 
 _Avoid_: API key, session token
 
 **Exec**:
-A foreground command run in a Sandbox until it exits or times out. Its result comes back either all at once or as a stream.
+A foreground command run in a Sandbox until it exits or times out. Its result comes back either all at once or as a stream. It runs as `user` unless another account is requested, in its own process group; a timeout or a client disconnect kills the whole group.
 _Avoid_: Run, command, job
+
+**`user`**:
+The ordinary, non-root account in every Sandbox, which Execs run as by default, with home `/home/user`. The Guest Agent adds it at the first Init when the image has none (ADR 0009). It is an account inside the Sandbox, not a Tenant or a person.
+_Avoid_: default user, sandbox user
 
 **Process**:
 A long-running program started in the background inside a Sandbox. It has its own ID, can be listed, read and killed, and is not bound by the per-command timeout.

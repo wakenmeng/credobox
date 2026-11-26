@@ -88,8 +88,12 @@ _Avoid_: Deleted, dead
 _Avoid_: API key, session token
 
 **Exec**:
-在 Sandbox 里执行一条前台命令，等它结束或超时，结果可以同步一次性返回，也可以流式返回。
+在 Sandbox 里执行一条前台命令，等它结束或超时，结果可以同步一次性返回，也可以流式返回。除非指定别的账号，它以 `user` 运行，并且在自己的进程组里；超时或客户端断开会杀掉整个进程组。
 _Avoid_: Run, command, job
+
+**`user`**:
+每个 Sandbox 里的普通（非 root）账号，Exec 默认以它运行，home 是 `/home/user`。镜像里没有时，Guest Agent 在第一次 Init 时加上（ADR 0009）。它是 Sandbox 内部的账号，不是 Tenant，也不是某个人。
+_Avoid_: default user, sandbox user
 
 **Process**:
 在 Sandbox 里通过后台方式启动的长期运行程序，有自己的 ID，可以列出、读取输出、结束，不受单条命令的超时限制。

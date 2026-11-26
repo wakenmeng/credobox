@@ -50,11 +50,12 @@ Tenant 的 agent ──REST──▶ Control Plane ──gRPC（第一阶段走 
 - Secret 是占位符，由 Egress Proxy 换成真实值：[ADR 0006](../../docs/adr/0006-secrets-as-placeholders.zh.md)
 - 数据通路的流量直接到 Host：[ADR 0007](../../docs/adr/0007-data-path-to-host.zh.md)
 - Guest Agent 的生命周期（PID 1、每次启动和恢复都做 Init、non-dumpable）：[ADR 0008](../../docs/adr/0008-guest-agent-lifecycle.zh.md)
+- 由平台在 Sandbox 启动时创建 `user` 账号：[ADR 0009](../../docs/adr/0009-platform-creates-the-user-account.zh.md)
 - 代码组织：一个 Go module。程序有 `cmd/controlplane`、`cmd/hostagent`、`cmd/guestagent`、`cmd/egressproxy`、`cmd/dnsresolver`、`cmd/mcpserver`。测试框架放 `bench/`，demo agent 放 `demo/`（Go，调用 Anthropic Go SDK，模型用 Claude Sonnet 5.5）。
 
 ## 4. 公共 API（草案）
 
-路径和字段在实现时可以调整；能力范围以这里为准。
+路径和字段在实现时可以调整；能力范围以这里为准。已经实现的接口在 [docs/api.zh.md](../../docs/api.zh.md) 里逐个字段说明。
 
 **控制通路**（Control Plane，用 Tenant 的 API key 鉴权）
 
@@ -85,7 +86,7 @@ Tenant 的 agent ──REST──▶ Control Plane ──gRPC（第一阶段走 
 
 **创建参数**：Template、vCPU、内存、磁盘、`gpu`（保留字段）、空闲超时、默认环境变量、Egress Policy（禁止、白名单、全开；白名单里可以混用域名和 Allowlist Preset）、Secret（环境变量名 → Secret，环境变量里放的是占位符）、要挂载的 Volume。
 
-**Exec 参数**：命令、用户（默认 `user`，可指定 root）、工作目录（默认 `/home/user`）、环境变量、超时（默认 60 秒，最多 1 小时）。超过一小时的 agent 任务应该用 Process。客户端断开时，这条 Exec 的整个进程组会被杀掉。
+**Exec 参数**：命令、用户（默认 `user`，可指定 root；镜像里没有 `user` 时由平台加上，ADR 0009）、工作目录（默认是该账号的 home，也就是 `/home/user`）、环境变量、超时（默认 60 秒，最多 1 小时）。超过一小时的 agent 任务应该用 Process。每条 Exec 在自己的进程组里运行；超时或客户端断开时，整个进程组被杀掉。缓冲结果每个流保留 1 MiB，流式结果没有上限（[docs/api.zh.md](../../docs/api.zh.md)）。
 
 **MCP server**：一个独立程序，只调用公共 API，提供 6 到 8 个工具（创建、exec、读写文件、启动和读取 Process、停止、删除）。
 

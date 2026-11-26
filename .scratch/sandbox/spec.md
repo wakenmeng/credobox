@@ -50,11 +50,12 @@ On each Host, and the only things a Sandbox may connect to (ADR 0005):
 - Secrets are placeholders swapped in by the Egress Proxy: [ADR 0006](../../docs/adr/0006-secrets-as-placeholders.md)
 - Data-path traffic goes straight to the Host: [ADR 0007](../../docs/adr/0007-data-path-to-host.md)
 - Guest Agent lifecycle (PID 1, Init on every start and restore, non-dumpable): [ADR 0008](../../docs/adr/0008-guest-agent-lifecycle.md)
+- The platform creates the `user` account at Sandbox start: [ADR 0009](../../docs/adr/0009-platform-creates-the-user-account.md)
 - Code layout: one Go module. Programs: `cmd/controlplane`, `cmd/hostagent`, `cmd/guestagent`, `cmd/egressproxy`, `cmd/dnsresolver`, `cmd/mcpserver`. The test harness lives in `bench/` and the demo agents in `demo/` (Go, using the Anthropic Go SDK, model Claude Sonnet 5.5).
 
 ## 4. Public API (draft)
 
-Paths and fields may change during implementation; the set of capabilities is fixed by this table.
+Paths and fields may change during implementation; the set of capabilities is fixed by this table. The endpoints built so far are documented field by field in [docs/api.md](../../docs/api.md).
 
 **Control path** (Control Plane, authenticated with the Tenant's API key)
 
@@ -85,7 +86,7 @@ A data-path request to a Stopped Sandbox starts it automatically.
 
 **Create parameters**: Template, vCPUs, memory, disk, `gpu` (reserved), idle timeout, default environment variables, Egress Policy (blocked, allowlist or fully open; the allowlist may mix domains and Allowlist Presets), Secrets (environment variable name → Secret; the variable holds a placeholder), Volumes to mount.
 
-**Exec parameters**: command, user (`user` by default, root can be requested), working directory (`/home/user` by default), environment variables, timeout (60 seconds by default, 1 hour at most). Agent runs longer than an hour should use a Process. If the client disconnects, the Exec's process group is killed.
+**Exec parameters**: command, user (`user` by default, root can be requested; the platform adds `user` to images that lack it, ADR 0009), working directory (the account's home by default, so `/home/user`), environment variables, timeout (60 seconds by default, 1 hour at most). Agent runs longer than an hour should use a Process. Each Exec runs in its own process group; on timeout, or if the client disconnects, the whole group is killed. A buffered result keeps 1 MiB of each stream; a streamed one has no cap ([docs/api.md](../../docs/api.md)).
 
 **MCP server**: a separate binary that calls only the public API and exposes 6–8 tools (create, exec, read/write file, start/read Process, stop, delete).
 

@@ -124,6 +124,7 @@ type execResult struct {
 	Stdout          string `json:"stdout"`
 	Stderr          string `json:"stderr"`
 	ExitCode        int    `json:"exit_code"`
+	TimedOut        bool   `json:"timed_out"`
 	StdoutTruncated bool   `json:"stdout_truncated"`
 }
 
@@ -179,8 +180,19 @@ func createRunning(t *testing.T, api string) sandbox {
 
 func execIn(t *testing.T, sb sandbox, token, command string) (execResult, int) {
 	t.Helper()
+	return execWith(t, sb, map[string]any{"command": command}, token)
+}
+
+// execWith runs a buffered Exec with any request body; the token defaults to
+// the Sandbox's own.
+func execWith(t *testing.T, sb sandbox, body map[string]any, token ...string) (execResult, int) {
+	t.Helper()
+	tok := sb.AccessToken
+	if len(token) > 0 {
+		tok = token[0]
+	}
 	var res execResult
-	code := call(t, "POST", sb.DataEndpoint+"/v1/sandboxes/"+sb.ID+"/exec", token, map[string]string{"command": command}, &res)
+	code := call(t, "POST", sb.DataEndpoint+"/v1/sandboxes/"+sb.ID+"/exec", tok, body, &res)
 	return res, code
 }
 

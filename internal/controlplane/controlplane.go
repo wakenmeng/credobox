@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	hav1 "gpubox/gen/hostagent/v1"
+	"gpubox/internal/envvars"
 )
 
 // Config configures a Control Plane.
@@ -114,6 +115,8 @@ func toJSON(sb *Sandbox) sandboxJSON {
 
 type createRequest struct {
 	Template string `json:"template"`
+	// Default environment variables for every process in the Sandbox.
+	Env map[string]string `json:"env"`
 }
 
 // handleCreate blocks until the Sandbox is Running, or Terminated.
@@ -123,12 +126,16 @@ func (cp *ControlPlane) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "body must be JSON with a non-empty \"template\"")
 		return
 	}
+	if err := envvars.Validate(req.Env); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	accessToken := newAccessToken()
 	hash := sha256.Sum256([]byte(accessToken))
 	now := time.Now()
 	sb := &Sandbox{
 		ID: newSandboxID(), TenantID: DefaultTenantID, Template: req.Template,
-		State: StateStarting, AccessTokenHash: hash[:], CreatedAt: now, UpdatedAt: now,
+		State: StateStarting, DefaultEnv: req.Env, AccessTokenHash: hash[:], CreatedAt: now, UpdatedAt: now,
 	}
 	// The record exists, as Starting, before the Host is asked for anything,
 	// so reconciliation (ticket 10) can always account for the container.
@@ -140,7 +147,7 @@ func (cp *ControlPlane) handleCreate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), cp.cfg.CreateTimeout)
 	defer cancel()
 	res, err := cp.host.CreateSandbox(ctx, &hav1.CreateSandboxRequest{
-		SandboxId: sb.ID, TemplateImage: sb.Template, AccessToken: accessToken,
+		SandboxId: sb.ID, TemplateImage: sb.Template, AccessToken: accessToken, Env: sb.DefaultEnv,
 	})
 	if err != nil {
 		cp.failCreate(w, sb, ctx, err)

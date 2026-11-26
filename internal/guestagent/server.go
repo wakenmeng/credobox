@@ -4,17 +4,18 @@
 package guestagent
 
 import (
-	"bytes"
 	"context"
 	"crypto/subtle"
-	"io"
 	"log"
 	"net"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -36,12 +37,6 @@ type Options struct {
 	EtcDir string
 }
 
-// MaxOutputBytes caps what one Exec keeps of stdout, and of stderr. The rest
-// is read and dropped, so the command still runs to completion and the Guest
-// Agent's memory stays bounded; the response says what was cut. Streaming
-// (ticket 04) lifts the cap.
-const MaxOutputBytes = 1 << 20
-
 // Agent serves the GuestAgent gRPC service.
 type Agent struct {
 	gav1.UnimplementedGuestAgentServer
@@ -52,6 +47,8 @@ type Agent struct {
 	// token is this incarnation's token from Init, kept only in memory.
 	// Empty until Init completes.
 	token string
+	// env is the Sandbox's default environment, from Init.
+	env map[string]string
 	// workload is the image's entrypoint process, once started.
 	workload *os.Process
 }
@@ -83,7 +80,13 @@ func (a *Agent) Init(ctx context.Context, req *gav1.InitRequest) (*gav1.InitResp
 		return nil, status.Error(codes.Unauthenticated, "re-Init needs the current token")
 	}
 	first := a.token == ""
-	a.token = req.Token
+	if first {
+		// Before any user process: Execs run as `user` (ADR 0009).
+		if err := ensureUserAccount(a.etcDir()); err != nil {
+			return nil, status.Errorf(codes.Internal, "%v", err)
+		}
+	}
+	a.token, a.env = req.Token, req.Env
 	if first && len(a.opts.Workload) > 0 {
 		if err := a.startWorkload(); err != nil {
 			return nil, status.Errorf(codes.Internal, "start the image's entrypoint: %v", err)
@@ -99,20 +102,18 @@ func (a *Agent) Init(ctx context.Context, req *gav1.InitRequest) (*gav1.InitResp
 // logs` shows it. When it exits the Sandbox keeps running: many images'
 // default command (a shell, a REPL) exits at once without a TTY.
 func (a *Agent) startWorkload() error {
-	etc := a.opts.EtcDir
-	if etc == "" {
-		etc = "/etc"
-	}
-	id, err := resolveUser(a.opts.User, etc)
+	id, err := a.identity(a.opts.User)
 	if err != nil {
 		return err
 	}
 	cmd := exec.Command(a.opts.Workload[0], a.opts.Workload[1:]...)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	env := []map[string]string{a.env}
 	if id.cred != nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: id.cred}
-		cmd.Env = withHome(os.Environ(), id.home)
+		env = []map[string]string{{"HOME": id.home}, a.env}
 	}
+	cmd.Env = mergeEnv(os.Environ(), env...)
 	exited, err := start(cmd)
 	if err != nil {
 		return err
@@ -125,13 +126,50 @@ func (a *Agent) startWorkload() error {
 	return nil
 }
 
-// withHome sets HOME, which Docker derives from USER and PID 1 got as root's.
-func withHome(env []string, home string) []string {
-	out := []string{"HOME=" + home}
-	for _, kv := range env {
-		if !strings.HasPrefix(kv, "HOME=") {
+// etcDir is where accounts are looked up.
+func (a *Agent) etcDir() string {
+	if a.opts.EtcDir == "" {
+		return "/etc"
+	}
+	return a.opts.EtcDir
+}
+
+// identity resolves an account the way Docker resolves USER. A process
+// that is already that uid and gid needs no switch, so it gets none.
+func (a *Agent) identity(spec string) (identity, error) {
+	id, err := resolveUser(spec, a.etcDir())
+	if err != nil {
+		return id, err
+	}
+	if c := id.cred; c != nil && int(c.Uid) == os.Geteuid() && int(c.Gid) == os.Getegid() {
+		id.cred = nil
+	}
+	return id, nil
+}
+
+// mergeEnv returns base with each layer's variables set on top, later
+// layers winning.
+func mergeEnv(base []string, layers ...map[string]string) []string {
+	set := map[string]string{}
+	for _, layer := range layers {
+		for k, v := range layer {
+			set[k] = v
+		}
+	}
+	out := make([]string, 0, len(base)+len(set))
+	for _, kv := range base {
+		k, _, _ := strings.Cut(kv, "=")
+		if _, ok := set[k]; !ok {
 			out = append(out, kv)
 		}
+	}
+	keys := make([]string, 0, len(set))
+	for k := range set {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out = append(out, k+"="+set[k])
 	}
 	return out
 }
@@ -143,22 +181,26 @@ func (a *Agent) Workload() *os.Process {
 	return a.workload
 }
 
-func (a *Agent) Exec(ctx context.Context, req *gav1.ExecRequest) (*gav1.ExecResponse, error) {
+func (a *Agent) Exec(req *gav1.ExecRequest, stream gav1.GuestAgent_ExecServer) error {
+	ctx := stream.Context()
 	if err := a.authorize(ctx); err != nil {
-		return nil, err
+		return err
+	}
+	cmd, err := a.execCommand(req)
+	if err != nil {
+		return err
 	}
 
 	outR, outW, err := os.Pipe()
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "pipe: %v", err)
+		return status.Errorf(codes.Internal, "pipe: %v", err)
 	}
 	errR, errW, err := os.Pipe()
 	if err != nil {
 		outR.Close()
 		outW.Close()
-		return nil, status.Errorf(codes.Internal, "pipe: %v", err)
+		return status.Errorf(codes.Internal, "pipe: %v", err)
 	}
-	cmd := exec.Command("/bin/sh", "-c", req.Command)
 	cmd.Stdout, cmd.Stderr = outW, errW
 	exited, err := start(cmd)
 	// The child holds its own copies of the write ends; close ours so the
@@ -168,58 +210,174 @@ func (a *Agent) Exec(ctx context.Context, req *gav1.ExecRequest) (*gav1.ExecResp
 	if err != nil {
 		outR.Close()
 		errR.Close()
-		return nil, status.Errorf(codes.Internal, "start command: %v", err)
+		return status.Errorf(codes.InvalidArgument, "start command: %v", err)
+	}
+	pid := cmd.Process.Pid
+	// The shell leads its own process group, and everything it starts
+	// stays in it unless it moves out on purpose (setsid). Killing the group
+	// kills them all; killing only the shell would leave its children running.
+	killGroup := func() { syscall.Kill(-pid, syscall.SIGKILL) }
+	if err := stream.Send(&gav1.ExecEvent{Event: &gav1.ExecEvent_Started{Started: &gav1.Started{Pid: int32(pid)}}}); err != nil {
+		killGroup()
+		outR.Close()
+		errR.Close()
+		return err
 	}
 
+	out := newOutput(outR, errR, req.MaxOutputBytes)
+	defer out.close()
+
+	var timeout, drain <-chan time.Time
+	if req.TimeoutMs > 0 {
+		t := time.NewTimer(time.Duration(req.TimeoutMs) * time.Millisecond)
+		defer t.Stop()
+		timeout = t.C
+	}
+	var ws syscall.WaitStatus
+	timedOut := false
+	// The Exec ends when the shell has exited and the output has ended. A
+	// background child that keeps stdout or stderr open keeps it going until
+	// the timeout.
+	for leaderDone, outputDone := false, false; !leaderDone || !outputDone; {
+		select {
+		case c, ok := <-out.chunks:
+			if !ok {
+				outputDone = true
+				out.chunks = nil
+				continue
+			}
+			if err := stream.Send(c.event()); err != nil {
+				killGroup()
+				return err
+			}
+		case ws = <-exited:
+			leaderDone = true
+			exited = nil
+		case <-timeout:
+			timedOut, timeout = true, nil
+			killGroup()
+			drain = time.After(time.Second)
+		case <-drain:
+			// Something that left the group still holds the pipes.
+			out.close()
+		case <-ctx.Done():
+			// The client went away (the Host data proxy cancels the call
+			// when its HTTP client disconnects).
+			killGroup()
+			return status.FromContextError(ctx.Err()).Err()
+		}
+	}
+	return stream.Send(&gav1.ExecEvent{Event: &gav1.ExecEvent_Exited{Exited: &gav1.Exited{
+		ExitCode:        int32(exitCode(ws)),
+		TimedOut:        timedOut,
+		StdoutTruncated: out.truncated[0].Load(),
+		StderrTruncated: out.truncated[1].Load(),
+	}}})
+}
+
+// execCommand builds the Exec's process: /bin/sh -c as the requested
+// account (`user` by default, ADR 0009), in its working directory, with the
+// image's, the Sandbox's and the Exec's environment layered in that order.
+func (a *Agent) execCommand(req *gav1.ExecRequest) (*exec.Cmd, error) {
+	user := req.User
+	if user == "" {
+		user = DefaultUser
+	}
+	id, err := a.identity(user)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	cwd := req.Cwd
+	if cwd == "" {
+		cwd = "/"
+		if fi, err := os.Stat(id.home); err == nil && fi.IsDir() {
+			cwd = id.home
+		}
+	}
+	a.mu.Lock()
+	sandboxEnv := a.env
+	a.mu.Unlock()
+
+	cmd := exec.Command("/bin/sh", "-c", req.Command)
+	// The child changes into Dir after it has switched to the account, so
+	// the directory is resolved with that account's permissions.
+	cmd.Dir = cwd
+	cmd.Env = mergeEnv(os.Environ(), map[string]string{"HOME": id.home}, sandboxEnv, req.Env)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: id.cred, Setpgid: true}
+	return cmd, nil
+}
+
+// chunk is a piece of one output stream.
+type chunk struct {
+	stderr bool
+	data   []byte
+}
+
+func (c chunk) event() *gav1.ExecEvent {
+	if c.stderr {
+		return &gav1.ExecEvent{Event: &gav1.ExecEvent_Stderr{Stderr: c.data}}
+	}
+	return &gav1.ExecEvent{Event: &gav1.ExecEvent_Stdout{Stdout: c.data}}
+}
+
+// output reads an Exec's stdout and stderr into chunks, which is closed once
+// both have ended. Past max bytes (if max > 0) a stream is read and dropped.
+type output struct {
+	chunks    chan chunk
+	files     [2]*os.File
+	truncated [2]atomic.Bool
+	quit      chan struct{}
+	closeOnce sync.Once
+}
+
+func newOutput(stdout, stderr *os.File, max int64) *output {
+	o := &output{chunks: make(chan chunk), files: [2]*os.File{stdout, stderr}, quit: make(chan struct{})}
 	var wg sync.WaitGroup
-	stdout, stderr := &cappedBuffer{max: MaxOutputBytes}, &cappedBuffer{max: MaxOutputBytes}
-	for _, p := range []struct {
-		r   *os.File
-		buf *cappedBuffer
-	}{{outR, stdout}, {errR, stderr}} {
+	for i, f := range o.files {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			defer p.r.Close()
-			io.Copy(p.buf, p.r)
+			o.read(f, i == 1, max, &o.truncated[i])
 		}()
 	}
-
-	var ws syscall.WaitStatus
-	select {
-	case ws = <-exited:
-	case <-ctx.Done():
-		cmd.Process.Kill()
-		<-exited
-		// Don't wait for the readers: a background child may still hold the
-		// pipes. Killing the whole process group comes with ticket 04.
-		return nil, status.FromContextError(ctx.Err()).Err()
-	}
-	wg.Wait()
-	return &gav1.ExecResponse{
-		Stdout:          stdout.buf.Bytes(),
-		Stderr:          stderr.buf.Bytes(),
-		ExitCode:        int32(exitCode(ws)),
-		StdoutTruncated: stdout.truncated,
-		StderrTruncated: stderr.truncated,
-	}, nil
+	chunks := o.chunks
+	go func() { wg.Wait(); close(chunks) }()
+	return o
 }
 
-// cappedBuffer keeps the first max bytes written to it and drops the rest.
-type cappedBuffer struct {
-	max       int
-	buf       bytes.Buffer
-	truncated bool
+func (o *output) read(f *os.File, stderr bool, max int64, truncated *atomic.Bool) {
+	var sent int64
+	for {
+		buf := make([]byte, 32<<10)
+		n, err := f.Read(buf)
+		data := buf[:n]
+		if max > 0 && sent+int64(n) > max {
+			data = data[:max-sent]
+			truncated.Store(true)
+		}
+		if len(data) > 0 {
+			sent += int64(len(data))
+			select {
+			case o.chunks <- chunk{stderr: stderr, data: data}:
+			case <-o.quit:
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
 }
 
-func (b *cappedBuffer) Write(p []byte) (int, error) {
-	if room := b.max - b.buf.Len(); len(p) > room {
-		b.buf.Write(p[:max(room, 0)])
-		b.truncated = true
-	} else {
-		b.buf.Write(p)
-	}
-	return len(p), nil
+// close stops the readers and closes the read ends, so a reader blocked on a
+// pipe some escaped process still holds returns too.
+func (o *output) close() {
+	o.closeOnce.Do(func() {
+		close(o.quit)
+		for _, f := range o.files {
+			f.Close()
+		}
+	})
 }
 
 // authorize admits a call only after Init, and only if it carries this

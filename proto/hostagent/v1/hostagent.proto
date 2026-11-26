@@ -23,6 +23,9 @@ message CreateSandboxRequest {
   string template_image = 2;
   // The Access Token the Host data proxy must require for this Sandbox.
   string access_token = 3;
+  // The Sandbox's default environment variables, delivered in Init and
+  // never put in the container config (ADR 0008).
+  map<string, string> env = 4;
 }
 
 message CreateSandboxResponse {

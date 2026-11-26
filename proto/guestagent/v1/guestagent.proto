@@ -14,13 +14,21 @@ service GuestAgent {
   // "authorization" metadata.
   rpc Init(InitRequest) returns (InitResponse);
 
-  // Exec runs a foreground command to completion.
-  rpc Exec(ExecRequest) returns (ExecResponse);
+  // Exec runs a foreground command in its own process group. The first
+  // event is Started (or the call fails: unknown user, bad working
+  // directory), then output as it is produced, then exactly one Exited.
+  // When the call is cancelled, or the timeout passes, the whole process
+  // group is killed.
+  rpc Exec(ExecRequest) returns (stream ExecEvent);
 }
 
 message InitRequest {
   // A fresh random token for this incarnation. Kept only in memory.
   string token = 1;
+  // Environment variables added to every process the Guest Agent starts:
+  // the Sandbox's defaults, given at create. They never go into the
+  // container config (ADR 0008).
+  map<string, string> env = 2;
 }
 
 message InitResponse {}
@@ -28,14 +36,41 @@ message InitResponse {}
 message ExecRequest {
   // Run with /bin/sh -c.
   string command = 1;
+  // An account in the image's /etc/passwd, by name or uid. Empty means
+  // "user" (ADR 0009).
+  string user = 2;
+  // Empty means the account's home directory, or / if it has none.
+  string cwd = 3;
+  // Added on top of the image's and the Sandbox's environment.
+  map<string, string> env = 4;
+  // 0 means no timeout.
+  int64 timeout_ms = 5;
+  // How much of stdout, and of stderr, to send. The rest is read and
+  // dropped, so the command still runs to completion and memory stays
+  // bounded. 0 means no cap (streaming).
+  int64 max_output_bytes = 6;
 }
 
-message ExecResponse {
-  // At most MaxOutputBytes (1 MiB) each; the rest is dropped.
-  bytes stdout = 1;
-  bytes stderr = 2;
-  int32 exit_code = 3;
-  // Set when the stream was longer than the cap and was cut.
-  bool stdout_truncated = 4;
-  bool stderr_truncated = 5;
+message ExecEvent {
+  oneof event {
+    Started started = 1;
+    bytes stdout = 2;
+    bytes stderr = 3;
+    Exited exited = 4;
+  }
+}
+
+message Started {
+  // Also the process group ID.
+  int32 pid = 1;
+}
+
+message Exited {
+  // The shell's exit code: its exit status, or 128 plus the signal number.
+  int32 exit_code = 1;
+  // The timeout passed and the process group was killed.
+  bool timed_out = 2;
+  // Set when a stream was longer than max_output_bytes and was cut.
+  bool stdout_truncated = 3;
+  bool stderr_truncated = 4;
 }

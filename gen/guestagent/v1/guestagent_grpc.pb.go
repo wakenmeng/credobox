@@ -36,8 +36,12 @@ type GuestAgentClient interface {
 	// every other call. Later calls must carry the token in the
 	// "authorization" metadata.
 	Init(ctx context.Context, in *InitRequest, opts ...grpc.CallOption) (*InitResponse, error)
-	// Exec runs a foreground command to completion.
-	Exec(ctx context.Context, in *ExecRequest, opts ...grpc.CallOption) (*ExecResponse, error)
+	// Exec runs a foreground command in its own process group. The first
+	// event is Started (or the call fails: unknown user, bad working
+	// directory), then output as it is produced, then exactly one Exited.
+	// When the call is cancelled, or the timeout passes, the whole process
+	// group is killed.
+	Exec(ctx context.Context, in *ExecRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ExecEvent], error)
 }
 
 type guestAgentClient struct {
@@ -58,15 +62,24 @@ func (c *guestAgentClient) Init(ctx context.Context, in *InitRequest, opts ...gr
 	return out, nil
 }
 
-func (c *guestAgentClient) Exec(ctx context.Context, in *ExecRequest, opts ...grpc.CallOption) (*ExecResponse, error) {
+func (c *guestAgentClient) Exec(ctx context.Context, in *ExecRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ExecEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ExecResponse)
-	err := c.cc.Invoke(ctx, GuestAgent_Exec_FullMethodName, in, out, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &GuestAgent_ServiceDesc.Streams[0], GuestAgent_Exec_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	x := &grpc.GenericClientStream[ExecRequest, ExecEvent]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
 }
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type GuestAgent_ExecClient = grpc.ServerStreamingClient[ExecEvent]
 
 // GuestAgentServer is the server API for GuestAgent service.
 // All implementations must embed UnimplementedGuestAgentServer
@@ -77,8 +90,12 @@ type GuestAgentServer interface {
 	// every other call. Later calls must carry the token in the
 	// "authorization" metadata.
 	Init(context.Context, *InitRequest) (*InitResponse, error)
-	// Exec runs a foreground command to completion.
-	Exec(context.Context, *ExecRequest) (*ExecResponse, error)
+	// Exec runs a foreground command in its own process group. The first
+	// event is Started (or the call fails: unknown user, bad working
+	// directory), then output as it is produced, then exactly one Exited.
+	// When the call is cancelled, or the timeout passes, the whole process
+	// group is killed.
+	Exec(*ExecRequest, grpc.ServerStreamingServer[ExecEvent]) error
 	mustEmbedUnimplementedGuestAgentServer()
 }
 
@@ -92,8 +109,8 @@ type UnimplementedGuestAgentServer struct{}
 func (UnimplementedGuestAgentServer) Init(context.Context, *InitRequest) (*InitResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Init not implemented")
 }
-func (UnimplementedGuestAgentServer) Exec(context.Context, *ExecRequest) (*ExecResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Exec not implemented")
+func (UnimplementedGuestAgentServer) Exec(*ExecRequest, grpc.ServerStreamingServer[ExecEvent]) error {
+	return status.Error(codes.Unimplemented, "method Exec not implemented")
 }
 func (UnimplementedGuestAgentServer) mustEmbedUnimplementedGuestAgentServer() {}
 func (UnimplementedGuestAgentServer) testEmbeddedByValue()                    {}
@@ -134,23 +151,16 @@ func _GuestAgent_Init_Handler(srv interface{}, ctx context.Context, dec func(int
 	return interceptor(ctx, in, info, handler)
 }
 
-func _GuestAgent_Exec_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ExecRequest)
-	if err := dec(in); err != nil {
-		return nil, err
+func _GuestAgent_Exec_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(ExecRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
 	}
-	if interceptor == nil {
-		return srv.(GuestAgentServer).Exec(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: GuestAgent_Exec_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(GuestAgentServer).Exec(ctx, req.(*ExecRequest))
-	}
-	return interceptor(ctx, in, info, handler)
+	return srv.(GuestAgentServer).Exec(m, &grpc.GenericServerStream[ExecRequest, ExecEvent]{ServerStream: stream})
 }
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type GuestAgent_ExecServer = grpc.ServerStreamingServer[ExecEvent]
 
 // GuestAgent_ServiceDesc is the grpc.ServiceDesc for GuestAgent service.
 // It's only intended for direct use with grpc.RegisterService,
@@ -163,11 +173,13 @@ var GuestAgent_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "Init",
 			Handler:    _GuestAgent_Init_Handler,
 		},
+	},
+	Streams: []grpc.StreamDesc{
 		{
-			MethodName: "Exec",
-			Handler:    _GuestAgent_Exec_Handler,
+			StreamName:    "Exec",
+			Handler:       _GuestAgent_Exec_Handler,
+			ServerStreams: true,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
 	Metadata: "guestagent/v1/guestagent.proto",
 }
