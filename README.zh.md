@@ -2,7 +2,7 @@
 
 > [English](README.md) | 中文
 
-一个学习项目：给 AI agent 用的 sandbox 平台，用 Go 写。agent 通过 API 创建一个用完即弃的隔离环境，在里面运行命令。底下的隔离技术可以替换。这个项目想回答的问题是：Docker、gVisor 和 Firecracker 在启动时间、资源开销和隔离强度上有什么不同，为什么。
+给 AI agent 用的 sandbox 平台，用 Go 写。agent 通过 API 创建一个用完即弃的隔离环境，在里面运行命令。底下的隔离技术可以替换，所以能在启动时间、资源开销和隔离强度上比较 Docker、gVisor 和 Firecracker。
 
 - **第一阶段**（现在）：Mac 上的 Docker Desktop。
 - **第二阶段**：GCP 上的 Firecracker。

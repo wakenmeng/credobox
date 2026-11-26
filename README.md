@@ -2,7 +2,7 @@
 
 > English | [中文](README.zh.md)
 
-A learning project: a sandbox platform for AI agents, written in Go. Through an API, an agent creates a disposable, isolated environment and uses it to run commands. The isolation technology underneath can be swapped, and the project's question is how Docker, gVisor and Firecracker differ in start time, overhead and isolation strength, and why.
+A sandbox platform for AI agents, written in Go. Through an API, an agent creates a disposable, isolated environment and uses it to run commands. The isolation technology underneath can be swapped, so Docker, gVisor and Firecracker can be compared on start time, overhead and isolation strength.
 
 - **Phase 1** (now): Docker Desktop on a Mac.
 - **Phase 2**: Firecracker on GCP.
