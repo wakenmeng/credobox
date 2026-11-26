@@ -110,8 +110,10 @@ func (s *store) markRunning(ctx context.Context, id, dataEndpoint string) error 
 	return err
 }
 
+// markTerminated also forgets the Sandbox's env: it may hold credentials,
+// and only a live Sandbox needs it (for a re-Init).
 func (s *store) markTerminated(ctx context.Context, id string, reason TerminationReason, detail string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE sandboxes SET state = ?, termination_reason = ?, termination_detail = ?, updated_at = ? WHERE id = ?`,
+	_, err := s.db.ExecContext(ctx, `UPDATE sandboxes SET state = ?, termination_reason = ?, termination_detail = ?, default_env = '{}', updated_at = ? WHERE id = ?`,
 		StateTerminated, reason, detail, time.Now().UnixNano(), id)
 	return err
 }

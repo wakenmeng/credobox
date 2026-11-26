@@ -9,22 +9,25 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	gav1 "gpubox/gen/guestagent/v1"
 	"gpubox/internal/envvars"
+	"gpubox/internal/utf8cut"
 )
 
 // Exec limits (spec §4).
 const (
 	DefaultExecTimeout = 60 * time.Second
 	MaxExecTimeout     = time.Hour
-	// BufferedOutputCap is how much of stdout, and of stderr, a buffered
-	// (non-streaming) Exec returns. A streamed Exec has no cap.
-	BufferedOutputCap = 1 << 20
+	// A buffered (non-streaming) Exec returns at most 1 MiB of stdout, and
+	// of stderr: the first BufferedHeadBytes and the last BufferedTailBytes.
+	// The end usually holds what an agent needs (the error, the summary).
+	// A streamed Exec has no cap.
+	BufferedHeadBytes = 256 << 10
+	BufferedTailBytes = 768 << 10
 )
 
 // dataProxy is the Host data proxy (ADR 0007).
@@ -49,9 +52,15 @@ type execResponse struct {
 	ExitCode int32  `json:"exit_code"`
 	// The timeout passed and the Exec's process group was killed.
 	TimedOut bool `json:"timed_out"`
-	// Each stream keeps its first 1 MiB; these say whether more was dropped.
-	StdoutTruncated bool `json:"stdout_truncated"`
-	StderrTruncated bool `json:"stderr_truncated"`
+	// A stream over 1 MiB keeps its first 256 KiB in stdout (stderr) and its
+	// last 768 KiB in stdout_tail (stderr_tail); *_omitted_bytes counts what
+	// was dropped between them. Under the cap, everything is in stdout.
+	StdoutTruncated bool   `json:"stdout_truncated"`
+	StderrTruncated bool   `json:"stderr_truncated"`
+	StdoutTail      string `json:"stdout_tail,omitempty"`
+	StderrTail      string `json:"stderr_tail,omitempty"`
+	StdoutOmitted   int64  `json:"stdout_omitted_bytes"`
+	StderrOmitted   int64  `json:"stderr_omitted_bytes"`
 }
 
 func (h *HostAgent) handleExec(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +98,7 @@ func (h *HostAgent) handleExec(w http.ResponseWriter, r *http.Request) {
 		TimeoutMs: timeout.Milliseconds(),
 	}
 	if !streaming {
-		greq.MaxOutputBytes = BufferedOutputCap
+		greq.OutputHeadBytes, greq.OutputTailBytes = BufferedHeadBytes, BufferedTailBytes
 	}
 
 	// r.Context() ends when the client disconnects. That cancels the call,
@@ -143,13 +152,26 @@ func bufferExec(w http.ResponseWriter, stream execEvents) {
 			stderr = append(stderr, e.Stderr...)
 		case *gav1.ExecEvent_Exited:
 			x := e.Exited
-			writeJSON(w, http.StatusOK, execResponse{
-				Stdout: string(stdout), Stderr: string(stderr), ExitCode: x.ExitCode, TimedOut: x.TimedOut,
+			res := execResponse{
+				ExitCode: x.ExitCode, TimedOut: x.TimedOut,
 				StdoutTruncated: x.StdoutTruncated, StderrTruncated: x.StderrTruncated,
-			})
+				StdoutOmitted: x.StdoutOmittedBytes, StderrOmitted: x.StderrOmittedBytes,
+			}
+			res.Stdout, res.StdoutTail = joinUnlessCut(stdout, x.StdoutTail, x.StdoutOmittedBytes)
+			res.Stderr, res.StderrTail = joinUnlessCut(stderr, x.StderrTail, x.StderrOmittedBytes)
+			writeJSON(w, http.StatusOK, res)
 			return
 		}
 	}
+}
+
+// joinUnlessCut puts head and tail back together when nothing was dropped
+// between them, so output within the cap comes back whole in one field.
+func joinUnlessCut(head, tail []byte, omitted int64) (string, string) {
+	if omitted == 0 {
+		return string(head) + string(tail), ""
+	}
+	return string(head), string(tail)
 }
 
 // streamExec relays the Exec as Server-Sent Events: `start`, then `stdout`
@@ -176,7 +198,7 @@ func streamExec(w http.ResponseWriter, stream execEvents, started *gav1.Started)
 	var pending [2][]byte
 	text := func(i int, b []byte) error {
 		names := [2]string{"stdout", "stderr"}
-		whole, rest := splitUTF8(append(pending[i], b...))
+		whole, rest := utf8cut.SplitIncomplete(append(pending[i], b...))
 		pending[i] = rest
 		if len(whole) == 0 {
 			return nil
@@ -211,19 +233,6 @@ func streamExec(w http.ResponseWriter, stream execEvents, started *gav1.Started)
 			return
 		}
 	}
-}
-
-// splitUTF8 splits b before an incomplete multi-byte character at its end.
-func splitUTF8(b []byte) (whole, rest []byte) {
-	for i := len(b) - 1; i >= 0 && i >= len(b)-utf8.UTFMax+1; i-- {
-		if utf8.RuneStart(b[i]) {
-			if !utf8.FullRune(b[i:]) {
-				return b[:i], b[i:]
-			}
-			break
-		}
-	}
-	return b, nil
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

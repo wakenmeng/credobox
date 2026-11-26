@@ -86,7 +86,7 @@ A data-path request to a Stopped Sandbox starts it automatically.
 
 **Create parameters**: Template, vCPUs, memory, disk, `gpu` (reserved), idle timeout, default environment variables, Egress Policy (blocked, allowlist or fully open; the allowlist may mix domains and Allowlist Presets), Secrets (environment variable name → Secret; the variable holds a placeholder), Volumes to mount.
 
-**Exec parameters**: command, user (`user` by default, root can be requested; the platform adds `user` to images that lack it, ADR 0009), working directory (the account's home by default, so `/home/user`), environment variables, timeout (60 seconds by default, 1 hour at most). Agent runs longer than an hour should use a Process. Each Exec runs in its own process group; on timeout, or if the client disconnects, the whole group is killed. A buffered result keeps 1 MiB of each stream; a streamed one has no cap ([docs/api.md](../../docs/api.md)).
+**Exec parameters**: command, user (`user` by default, root can be requested; the platform adds `user` to images that lack it, ADR 0009), working directory (the account's home by default, so `/home/user`), environment variables, timeout (60 seconds by default, 1 hour at most). Agent runs longer than an hour should use a Process. Each Exec runs in its own process group; on timeout, or if the client disconnects, the whole group is killed. A buffered result keeps 1 MiB of each stream (the first 256 KiB and the last 768 KiB); a streamed one has no cap ([docs/api.md](../../docs/api.md)).
 
 **MCP server**: a separate binary that calls only the public API and exposes 6–8 tools (create, exec, read/write file, start/read Process, stop, delete).
 

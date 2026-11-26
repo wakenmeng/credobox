@@ -126,6 +126,8 @@ type execResult struct {
 	ExitCode        int    `json:"exit_code"`
 	TimedOut        bool   `json:"timed_out"`
 	StdoutTruncated bool   `json:"stdout_truncated"`
+	StdoutTail      string `json:"stdout_tail"`
+	StdoutOmitted   int    `json:"stdout_omitted_bytes"`
 }
 
 func call(t *testing.T, method, url, token string, body, out any) int {
@@ -447,15 +449,37 @@ CMD ["/bin/sh", "-c", "{ id; echo $HOME; } > /tmp/w && mv /tmp/w /tmp/workload-i
 	}
 }
 
-func TestLargeExecOutputIsTruncatedNotAnError(t *testing.T) {
+func TestLargeBufferedOutputKeepsTheHeadAndTheTail(t *testing.T) {
 	api := startPlatform(t, platformOptions{})
 	sb := createRunning(t, api)
 
-	// 8 MiB: twice gRPC's default 4 MB message limit.
-	res, code := execIn(t, sb, sb.AccessToken, "head -c 8388608 /dev/zero")
+	// 8 MiB between two markers: twice gRPC's default 4 MB message limit.
+	res, code := execIn(t, sb, sb.AccessToken, "echo start; head -c 8388608 /dev/zero | tr '\\0' m; echo; echo end")
 
-	if code != http.StatusOK || len(res.Stdout) != 1<<20 || !res.StdoutTruncated || res.ExitCode != 0 {
-		t.Fatalf("HTTP %d, %d bytes, truncated=%v, exit=%d; want 200, 1 MiB, true, 0",
-			code, len(res.Stdout), res.StdoutTruncated, res.ExitCode)
+	if code != http.StatusOK || res.ExitCode != 0 || !res.StdoutTruncated {
+		t.Fatalf("HTTP %d, exit=%d, truncated=%v; want 200, 0, true", code, res.ExitCode, res.StdoutTruncated)
+	}
+	// The first 256 KiB and the last 768 KiB: 1 MiB in all, as before.
+	if len(res.Stdout) != 256<<10 || !strings.HasPrefix(res.Stdout, "start\n") {
+		t.Errorf("stdout: %d bytes, want the first 256 KiB, starting with the marker", len(res.Stdout))
+	}
+	if len(res.StdoutTail) != 768<<10 || !strings.HasSuffix(res.StdoutTail, "m\nend\n") {
+		t.Errorf("stdout_tail: %d bytes, want the last 768 KiB, ending with the marker", len(res.StdoutTail))
+	}
+	if total := len("start\n") + 8388608 + len("\nend\n"); res.StdoutOmitted != total-(1<<20) {
+		t.Errorf("stdout_omitted_bytes = %d, want %d", res.StdoutOmitted, total-(1<<20))
+	}
+}
+
+func TestBufferedOutputWithinTheCapComesBackWhole(t *testing.T) {
+	api := startPlatform(t, platformOptions{})
+	sb := createRunning(t, api)
+
+	// 600 KiB: past the 256 KiB head, but within the 1 MiB cap.
+	res, _ := execIn(t, sb, sb.AccessToken, "head -c 614400 /dev/zero | tr '\\0' a")
+
+	if res.Stdout != strings.Repeat("a", 614400) || res.StdoutTail != "" || res.StdoutTruncated || res.StdoutOmitted != 0 {
+		t.Fatalf("stdout %d bytes, tail %d, truncated=%v; want all 600 KiB in stdout",
+			len(res.Stdout), len(res.StdoutTail), res.StdoutTruncated)
 	}
 }

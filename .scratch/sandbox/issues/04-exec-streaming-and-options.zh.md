@@ -28,7 +28,7 @@ Linux 的用户和 UID；进程组，以及为什么要按进程组整组杀掉�
 | 验收项 | 测试 |
 |---|---|
 | 命令运行中就能收到输出 | `e2e` `TestStreamedExecOutputArrivesWhileTheCommandRuns`；`internal/guestagent` `TestExecOutputArrivesWhileTheCommandRuns` |
-| 流式 Exec 没有上限；缓冲结果每路保留 1 MiB 和 `*_truncated` | `e2e` `TestStreamedExecHasNoOutputCap`（3 MiB）、`TestLargeExecOutputIsTruncatedNotAnError`；`internal/guestagent` `TestStreamedExecHasNoOutputCap`、`TestBufferedExecOutputIsCappedAndMarkedTruncated` |
+| 流式 Exec 没有上限；缓冲结果每路保留 1 MiB 和 `*_truncated` | `e2e` `TestStreamedExecHasNoOutputCap`（3 MiB）、`TestLargeBufferedOutputKeepsTheHeadAndTheTail`、`TestBufferedOutputWithinTheCapComesBackWhole`；`internal/guestagent` `TestStreamedExecHasNoOutputCap`、`TestBufferedExecKeepsTheHeadAndTheTailAndDropsTheMiddle`、`TestBufferedExecOutputBetweenHeadAndCapIsSplitWithNothingDropped`、`TestBufferedExecCutsHeadAndTailOnCharacterBoundaries` |
 | 超时后进程被杀，结果标出超时 | `e2e` `TestExecTimeoutKillsTheProcessGroupAndIsMarked`（缓冲）、`TestStreamedExecTimeoutIsMarkedInTheLastEvent`；`internal/guestagent` `TestExecTimeoutKillsTheWholeProcessGroupAndSaysSo` |
 | 客户端断开后命令被结束，没有孤儿进程 | `e2e` `TestClientDisconnectEndsTheExecWithNoOrphans`；`internal/guestagent` `TestCancelledExecKillsTheWholeProcessGroup` |
 | `whoami` 默认输出 `user` | `e2e` `TestExecRunsAsUserByDefault`（alpine 本来没有 `user`；同时检查 `/home/user` 是 `user:750`）、`TestExecAsRootWhenRequested`；`internal/guestagent` `TestAddUserAccount…`（uid 的选择） |
@@ -40,11 +40,12 @@ Linux 的用户和 UID；进程组，以及为什么要按进程组整组杀掉�
 实现过程中做的决定：
 - **由平台创建 `user`**（[ADR 0009](../../../docs/adr/0009-platform-creates-the-user-account.zh.md)，已和用户确认）。第一次 Init 时、启动 entrypoint 之前，如果镜像的 `/etc/passwd` 和 `/etc/group` 里没有 `user`，Guest Agent 就追加进去（取从 1000 起第一个空闲 uid），并创建 `/home/user`（0750）。entrypoint 仍然以镜像的 USER 运行；Exec 以 `user` 运行，除非 `user` 字段指定了别的账号。
 - **默认工作目录是该账号的 home**：`user` 是 `/home/user`（和 spec 一致），root 是 `/root`，home 不存在时是 `/`。子进程先切换账号再进入目录（Go 的 fork 顺序），所以目录是按该账号自己的权限解析的，而不是按 root。
-- **只有一个流式 RPC。** Guest Agent 的 `Exec` 是 server-streaming：`Started`、若干输出块、最后一个 `Exited`。缓冲响应就是 Host data proxy 把同一个流收集起来；它要求 Guest Agent 每路最多发 1 MiB（`max_output_bytes`），所以丢弃仍发生在 Sandbox 里面，无穷无尽的输出不会穿过通道。
+- **只有一个流式 RPC。** Guest Agent 的 `Exec` 是 server-streaming：`Started`、若干输出块、最后一个 `Exited`。缓冲响应就是 Host data proxy 把同一个流收集起来；它要求 Guest Agent 发一个有上限的流（`output_head_bytes`、`output_tail_bytes`），所以丢弃仍发生在 Sandbox 里面，无穷无尽的输出不会穿过通道。
+- **缓冲上限保留首尾**（review 后修改，已和用户确认）。任务 01 保留的是前 1 MiB，但对 agent 来说，输出的结尾（编译错误、测试汇总、traceback 的最后一帧）最重要。现在超过 1 MiB 的流把前 256 KiB 放在 `stdout`，最后 768 KiB 放在 `stdout_tail`，中间少了多少由 `stdout_omitted_bytes` 给出；不超过 1 MiB 时全部都在 `stdout`。Guest Agent 边产生边发送开头，把结尾留在一个最多两倍 768 KiB 的缓冲里，随 `Exited` 发出；两段都在 UTF-8 边界上切开（`internal/utf8cut`，和 SSE 那条路共用）。Process（任务 06）同样保留最新的输出，并用 `truncated_before` 标出丢失。
 - **超时由 Guest Agent 执行**，用 SIGKILL 杀掉整个组（退出码 137，`timed_out: true`）。Host data proxy 自己的截止时间是超时再加 10 秒，只作兜底。如果有离开了进程组的进程还拿着管道，Guest Agent 在杀完 1 秒后停止读取。
-- **shell 已退出并且输出已关闭，Exec 才结束**（和 `ssh` 一样）。一个开着 stdout 的后台子进程会让 Exec 一直等到超时；输出被重定向的后台子进程在 Exec 结束后继续运行。只有超时或断开时才整组杀掉。
+- **shell 已退出并且输出已关闭，Exec 才结束**（和 `ssh` 一样）。所以超时的 Exec 报告的是 shell 自己的退出码：输出没重定向的 `server &` 是 0；应以 `timed_out` 为准（`TestExecHeldOpenByABackgroundChildTimesOutWithTheShellsExitCode`）。一个开着 stdout 的后台子进程会让 Exec 一直等到超时；输出被重定向的后台子进程在 Exec 结束后继续运行。只有超时或断开时才整组杀掉。
 - **SSE 事件**：`start`（`pid`）、`stdout` / `stderr`（`text`）、`exit`（`exit_code`、`timed_out`）、`error`。输出以 JSON 里的 UTF-8 文本发送；proxy 会把块末尾不完整的多字节字符留到下一块。命令启动前发现的错误照常返回 JSON `400`。
-- **Sandbox 的默认 `env`** 存在 Control Plane 的记录里（`default_env`，以后 re-Init 时可以再发一次），通过 CreateSandbox 发给 Host Agent，再通过 Init 发给 Guest Agent，作用于 entrypoint 和每条 Exec。变量名在 Control Plane 和 Host data proxy 里都会检查（`internal/envvars`）。
+- **Sandbox 的默认 `env`** 存在 Control Plane 的记录里（`default_env`，以后 re-Init 时可以再发一次），通过 CreateSandbox 发给 Host Agent，再通过 Init 发给 Guest Agent，作用于 entrypoint 和每条 Exec。它在数据库里是明文，所以 `markTerminated` 会清掉它（review 后修改；`internal/controlplane` 的 `TestTerminatedSandboxNoLongerHoldsItsEnvironment`），API 文档也写明凭据应该用 Secret（任务 23）。写库失败后停在 Starting 的记录会一直保留它，直到 reconciliation（任务 10）处理。变量名在 Control Plane 和 Host data proxy 里都会检查（`internal/envvars`）。
 - 进程内的 Guest Agent 测试把 `user` 映射到运行测试的当前用户，因为切换到其他 uid 需要 root；已经是目标 uid 和 gid 的进程不做切换。setuid 本身由 `e2e` 覆盖。
 
 留给后续任务：

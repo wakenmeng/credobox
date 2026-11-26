@@ -86,7 +86,7 @@ Tenant 的 agent ──REST──▶ Control Plane ──gRPC（第一阶段走 
 
 **创建参数**：Template、vCPU、内存、磁盘、`gpu`（保留字段）、空闲超时、默认环境变量、Egress Policy（禁止、白名单、全开；白名单里可以混用域名和 Allowlist Preset）、Secret（环境变量名 → Secret，环境变量里放的是占位符）、要挂载的 Volume。
 
-**Exec 参数**：命令、用户（默认 `user`，可指定 root；镜像里没有 `user` 时由平台加上，ADR 0009）、工作目录（默认是该账号的 home，也就是 `/home/user`）、环境变量、超时（默认 60 秒，最多 1 小时）。超过一小时的 agent 任务应该用 Process。每条 Exec 在自己的进程组里运行；超时或客户端断开时，整个进程组被杀掉。缓冲结果每个流保留 1 MiB，流式结果没有上限（[docs/api.zh.md](../../docs/api.zh.md)）。
+**Exec 参数**：命令、用户（默认 `user`，可指定 root；镜像里没有 `user` 时由平台加上，ADR 0009）、工作目录（默认是该账号的 home，也就是 `/home/user`）、环境变量、超时（默认 60 秒，最多 1 小时）。超过一小时的 agent 任务应该用 Process。每条 Exec 在自己的进程组里运行；超时或客户端断开时，整个进程组被杀掉。缓冲结果每个流保留 1 MiB（前 256 KiB 加最后 768 KiB），流式结果没有上限（[docs/api.zh.md](../../docs/api.zh.md)）。
 
 **MCP server**：一个独立程序，只调用公共 API，提供 6 到 8 个工具（创建、exec、读写文件、启动和读取 Process、停止、删除）。
 

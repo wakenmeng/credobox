@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -23,6 +22,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	gav1 "gpubox/gen/guestagent/v1"
+	"gpubox/internal/utf8cut"
 )
 
 // Options configures a Guest Agent.
@@ -216,6 +216,11 @@ func (a *Agent) Exec(req *gav1.ExecRequest, stream gav1.GuestAgent_ExecServer) e
 	// The shell leads its own process group, and everything it starts
 	// stays in it unless it moves out on purpose (setsid). Killing the group
 	// kills them all; killing only the shell would leave its children running.
+	//
+	// In theory, once every member has exited and only a process that left
+	// the group (setsid) still holds the pipes, the pgid could be reused by
+	// an unrelated new group before the kill. That needs the pid counter to
+	// wrap around within the timeout, so it is ignored.
 	killGroup := func() { syscall.Kill(-pid, syscall.SIGKILL) }
 	if err := stream.Send(&gav1.ExecEvent{Event: &gav1.ExecEvent_Started{Started: &gav1.Started{Pid: int32(pid)}}}); err != nil {
 		killGroup()
@@ -224,7 +229,7 @@ func (a *Agent) Exec(req *gav1.ExecRequest, stream gav1.GuestAgent_ExecServer) e
 		return err
 	}
 
-	out := newOutput(outR, errR, req.MaxOutputBytes)
+	out := newOutput(outR, errR, req.OutputHeadBytes, req.OutputTailBytes)
 	defer out.close()
 
 	var timeout, drain <-chan time.Time
@@ -267,11 +272,16 @@ func (a *Agent) Exec(req *gav1.ExecRequest, stream gav1.GuestAgent_ExecServer) e
 			return status.FromContextError(ctx.Err()).Err()
 		}
 	}
+	stdout, stderr := out.tails[0], out.tails[1]
 	return stream.Send(&gav1.ExecEvent{Event: &gav1.ExecEvent_Exited{Exited: &gav1.Exited{
-		ExitCode:        int32(exitCode(ws)),
-		TimedOut:        timedOut,
-		StdoutTruncated: out.truncated[0].Load(),
-		StderrTruncated: out.truncated[1].Load(),
+		ExitCode:           int32(exitCode(ws)),
+		TimedOut:           timedOut,
+		StdoutTruncated:    stdout.omitted > 0,
+		StderrTruncated:    stderr.omitted > 0,
+		StdoutTail:         stdout.tail,
+		StderrTail:         stderr.tail,
+		StdoutOmittedBytes: stdout.omitted,
+		StderrOmittedBytes: stderr.omitted,
 	}}})
 }
 
@@ -321,23 +331,32 @@ func (c chunk) event() *gav1.ExecEvent {
 }
 
 // output reads an Exec's stdout and stderr into chunks, which is closed once
-// both have ended. Past max bytes (if max > 0) a stream is read and dropped.
+// both have ended. With a cap (head or tail > 0), each stream sends only its
+// first head bytes as chunks and keeps the last tail bytes of the rest in
+// tails, which are complete once chunks is closed; the middle is read and
+// dropped.
 type output struct {
 	chunks    chan chunk
 	files     [2]*os.File
-	truncated [2]atomic.Bool
+	tails     [2]tail
 	quit      chan struct{}
 	closeOnce sync.Once
 }
 
-func newOutput(stdout, stderr *os.File, max int64) *output {
+// tail is what a capped stream kept after its head.
+type tail struct {
+	tail    []byte
+	omitted int64
+}
+
+func newOutput(stdout, stderr *os.File, head, tail int64) *output {
 	o := &output{chunks: make(chan chunk), files: [2]*os.File{stdout, stderr}, quit: make(chan struct{})}
 	var wg sync.WaitGroup
 	for i, f := range o.files {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			o.read(f, i == 1, max, &o.truncated[i])
+			o.read(f, i == 1, head, tail, &o.tails[i])
 		}()
 	}
 	chunks := o.chunks
@@ -345,27 +364,72 @@ func newOutput(stdout, stderr *os.File, max int64) *output {
 	return o
 }
 
-func (o *output) read(f *os.File, stderr bool, max int64, truncated *atomic.Bool) {
-	var sent int64
+func (o *output) read(f *os.File, stderr bool, head, tailMax int64, kept *tail) {
+	capped := head > 0 || tailMax > 0
+	var sent, after int64
+	headFull := head == 0
+	// rest holds the latest output after the head, trimmed to tailMax now
+	// and then, so it never grows past twice that plus one read.
+	var rest []byte
+	defer func() {
+		if !capped {
+			return
+		}
+		if int64(len(rest)) > tailMax {
+			rest = rest[int64(len(rest))-tailMax:]
+		}
+		omitted := after - int64(len(rest))
+		if omitted > 0 {
+			// The tail may start inside a character whose start was dropped.
+			trimmed := utf8cut.TrimPartialStart(rest)
+			omitted += int64(len(rest) - len(trimmed))
+			rest = trimmed
+		}
+		kept.tail, kept.omitted = append([]byte(nil), rest...), omitted
+	}()
 	for {
 		buf := make([]byte, 32<<10)
 		n, err := f.Read(buf)
 		data := buf[:n]
-		if max > 0 && sent+int64(n) > max {
-			data = data[:max-sent]
-			truncated.Store(true)
+		if capped && !headFull && len(data) > 0 {
+			h := data
+			if room := head - sent; int64(len(h)) >= room {
+				// The head ends in this read, on a character boundary.
+				h, _ = utf8cut.SplitIncomplete(h[:room])
+				headFull = true
+			}
+			if !o.send(chunk{stderr: stderr, data: h}) {
+				return
+			}
+			sent += int64(len(h))
+			data = data[len(h):]
 		}
-		if len(data) > 0 {
-			sent += int64(len(data))
-			select {
-			case o.chunks <- chunk{stderr: stderr, data: data}:
-			case <-o.quit:
+		if capped && headFull && len(data) > 0 {
+			after += int64(len(data))
+			rest = append(rest, data...)
+			if int64(len(rest)) > 2*tailMax {
+				rest = append(rest[:0], rest[int64(len(rest))-tailMax:]...)
+			}
+		} else if !capped && len(data) > 0 {
+			if !o.send(chunk{stderr: stderr, data: data}) {
 				return
 			}
 		}
 		if err != nil {
 			return
 		}
+	}
+}
+
+func (o *output) send(c chunk) bool {
+	if len(c.data) == 0 {
+		return true
+	}
+	select {
+	case o.chunks <- c:
+		return true
+	case <-o.quit:
+		return false
 	}
 }
 

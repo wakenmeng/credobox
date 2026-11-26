@@ -17,7 +17,7 @@ Creates a Sandbox and blocks until it is Running, or Terminated.
 | Field | | |
 |---|---|---|
 | `template` | required | The Template's OCI image reference. |
-| `env` | optional | Default environment variables for every process in the Sandbox: the image's entrypoint and every Exec. They are delivered in Init, never written into the container config (ADR 0008). |
+| `env` | optional | Default environment variables for every process in the Sandbox: the image's entrypoint and every Exec. They are delivered in Init, never written into the container config (ADR 0008). **Don't put secrets here**: the values are stored in plain text in the Control Plane's database for as long as the Sandbox lives (and cleared when it is Terminated), and any process in the Sandbox can read them. Credentials belong in Secrets (ticket 23), which never enter the Sandbox. |
 
 `201` returns the Sandbox with `data_endpoint` and `access_token`; the token is shown only here. A failed or timed-out create returns `502` or `504` with the Sandbox Terminated and its `termination_reason`. A bad body or variable name is `400`.
 
@@ -54,10 +54,16 @@ A bad option (timeout out of range, unknown user, missing directory, invalid var
 
 ```json
 {"stdout": "...", "stderr": "...", "exit_code": 0, "timed_out": false,
- "stdout_truncated": false, "stderr_truncated": false}
+ "stdout_truncated": false, "stderr_truncated": false,
+ "stdout_omitted_bytes": 0, "stderr_omitted_bytes": 0}
 ```
 
-Each of stdout and stderr keeps its first 1 MiB. The rest is read and dropped, the command still runs to completion, and `*_truncated` says that something was cut. For more output, stream it.
+Each of stdout and stderr keeps at most 1 MiB. Up to that, all of it is in `stdout` (`stderr`). Beyond it, the stream keeps its **first 256 KiB** in `stdout` and its **last 768 KiB** in `stdout_tail` (`stderr_tail`), and drops the middle: `stdout_truncated` is `true` and `stdout_omitted_bytes` says how many bytes are missing between the two. The tail gets the larger share because the end of an output is where errors and summaries usually are. Both pieces are cut on UTF-8 character boundaries. The dropped part is still read, so the command runs to completion. For all of the output, stream it.
+
+```json
+{"stdout": "Collecting ...", "stdout_tail": "... 3 failed, 120 passed",
+ "stdout_truncated": true, "stdout_omitted_bytes": 7340032, "exit_code": 1, ...}
+```
 
 #### Streamed response (`Accept: text/event-stream`)
 
@@ -90,7 +96,7 @@ Errors found before the command starts (the `400`s above) come back as an ordina
 
 Each Exec's shell leads **its own process group**, and everything it starts stays in that group. (A process group is the unit that `kill(-pgid)` reaches. Killing only the shell would leave its children, for example a server it started with `&`, running with nobody to answer for them.)
 
-- **Timeout.** When `timeout_seconds` passes, the whole process group is killed with SIGKILL. The result is still a normal response: `"timed_out": true`, and `exit_code` is usually 137 (128 + SIGKILL). Output produced before the kill is kept.
+- **Timeout.** When `timeout_seconds` passes, the whole process group is killed with SIGKILL. The result is still a normal response with `"timed_out": true`, and the output produced before the kill is kept. **Trust `timed_out`, not `exit_code`**: `exit_code` is the shell's own, which is 137 (128 + SIGKILL) when the kill ended the shell, but can be anything, often 0, when the shell had already exited and only a background child holding stdout or stderr open kept the Exec going (see "Normal exit" below). For example, `server &` without redirecting its output returns `"timed_out": true, "exit_code": 0` after the full timeout.
 - **Client disconnect.** If the client closes the connection before the Exec has finished, buffered or streamed, the Host data proxy cancels the Exec and the Guest Agent kills its whole process group at once. Nothing keeps running, and the output is gone: an Exec is not resumable. To run something that must survive a dropped connection, use a Process.
 - **Normal exit.** The Exec ends when the shell has exited **and** stdout and stderr have closed. A background child that keeps them open (`server &`) keeps the Exec going until it exits or the timeout kills the group. A background child whose output is redirected (`server >/tmp/log 2>&1 &`) lets the Exec end at once and keeps running afterwards.
 - **Limit.** A process that deliberately leaves the group (`setsid`, or a daemon that double-forks into a new session) is not reached by the group kill.

@@ -45,10 +45,13 @@ message ExecRequest {
   map<string, string> env = 4;
   // 0 means no timeout.
   int64 timeout_ms = 5;
-  // How much of stdout, and of stderr, to send. The rest is read and
-  // dropped, so the command still runs to completion and memory stays
-  // bounded. 0 means no cap (streaming).
-  int64 max_output_bytes = 6;
+  // A cap on each of stdout and stderr, for a buffered Exec: send the first
+  // output_head_bytes as they are produced, and of everything after that
+  // keep only the last output_tail_bytes, returned in Exited. The middle is
+  // read and dropped, so the command still runs to completion and memory
+  // stays bounded. Both 0 means no cap (streaming).
+  int64 output_head_bytes = 6;
+  int64 output_tail_bytes = 7;
 }
 
 message ExecEvent {
@@ -70,7 +73,14 @@ message Exited {
   int32 exit_code = 1;
   // The timeout passed and the process group was killed.
   bool timed_out = 2;
-  // Set when a stream was longer than max_output_bytes and was cut.
+  // Set when a stream was longer than head plus tail, so its middle was cut.
   bool stdout_truncated = 3;
   bool stderr_truncated = 4;
+  // With a cap: the output that came after the head, at most
+  // output_tail_bytes of it, and how many bytes between head and tail were
+  // dropped. Head and tail are cut on UTF-8 character boundaries.
+  bytes stdout_tail = 5;
+  bytes stderr_tail = 6;
+  int64 stdout_omitted_bytes = 7;
+  int64 stderr_omitted_bytes = 8;
 }

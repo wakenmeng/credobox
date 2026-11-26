@@ -130,12 +130,15 @@ type ExecRequest struct {
 	Env map[string]string `protobuf:"bytes,4,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// 0 means no timeout.
 	TimeoutMs int64 `protobuf:"varint,5,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
-	// How much of stdout, and of stderr, to send. The rest is read and
-	// dropped, so the command still runs to completion and memory stays
-	// bounded. 0 means no cap (streaming).
-	MaxOutputBytes int64 `protobuf:"varint,6,opt,name=max_output_bytes,json=maxOutputBytes,proto3" json:"max_output_bytes,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// A cap on each of stdout and stderr, for a buffered Exec: send the first
+	// output_head_bytes as they are produced, and of everything after that
+	// keep only the last output_tail_bytes, returned in Exited. The middle is
+	// read and dropped, so the command still runs to completion and memory
+	// stays bounded. Both 0 means no cap (streaming).
+	OutputHeadBytes int64 `protobuf:"varint,6,opt,name=output_head_bytes,json=outputHeadBytes,proto3" json:"output_head_bytes,omitempty"`
+	OutputTailBytes int64 `protobuf:"varint,7,opt,name=output_tail_bytes,json=outputTailBytes,proto3" json:"output_tail_bytes,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ExecRequest) Reset() {
@@ -203,9 +206,16 @@ func (x *ExecRequest) GetTimeoutMs() int64 {
 	return 0
 }
 
-func (x *ExecRequest) GetMaxOutputBytes() int64 {
+func (x *ExecRequest) GetOutputHeadBytes() int64 {
 	if x != nil {
-		return x.MaxOutputBytes
+		return x.OutputHeadBytes
+	}
+	return 0
+}
+
+func (x *ExecRequest) GetOutputTailBytes() int64 {
+	if x != nil {
+		return x.OutputTailBytes
 	}
 	return 0
 }
@@ -375,11 +385,18 @@ type Exited struct {
 	ExitCode int32 `protobuf:"varint,1,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
 	// The timeout passed and the process group was killed.
 	TimedOut bool `protobuf:"varint,2,opt,name=timed_out,json=timedOut,proto3" json:"timed_out,omitempty"`
-	// Set when a stream was longer than max_output_bytes and was cut.
+	// Set when a stream was longer than head plus tail, so its middle was cut.
 	StdoutTruncated bool `protobuf:"varint,3,opt,name=stdout_truncated,json=stdoutTruncated,proto3" json:"stdout_truncated,omitempty"`
 	StderrTruncated bool `protobuf:"varint,4,opt,name=stderr_truncated,json=stderrTruncated,proto3" json:"stderr_truncated,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// With a cap: the output that came after the head, at most
+	// output_tail_bytes of it, and how many bytes between head and tail were
+	// dropped. Head and tail are cut on UTF-8 character boundaries.
+	StdoutTail         []byte `protobuf:"bytes,5,opt,name=stdout_tail,json=stdoutTail,proto3" json:"stdout_tail,omitempty"`
+	StderrTail         []byte `protobuf:"bytes,6,opt,name=stderr_tail,json=stderrTail,proto3" json:"stderr_tail,omitempty"`
+	StdoutOmittedBytes int64  `protobuf:"varint,7,opt,name=stdout_omitted_bytes,json=stdoutOmittedBytes,proto3" json:"stdout_omitted_bytes,omitempty"`
+	StderrOmittedBytes int64  `protobuf:"varint,8,opt,name=stderr_omitted_bytes,json=stderrOmittedBytes,proto3" json:"stderr_omitted_bytes,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *Exited) Reset() {
@@ -440,6 +457,34 @@ func (x *Exited) GetStderrTruncated() bool {
 	return false
 }
 
+func (x *Exited) GetStdoutTail() []byte {
+	if x != nil {
+		return x.StdoutTail
+	}
+	return nil
+}
+
+func (x *Exited) GetStderrTail() []byte {
+	if x != nil {
+		return x.StderrTail
+	}
+	return nil
+}
+
+func (x *Exited) GetStdoutOmittedBytes() int64 {
+	if x != nil {
+		return x.StdoutOmittedBytes
+	}
+	return 0
+}
+
+func (x *Exited) GetStderrOmittedBytes() int64 {
+	if x != nil {
+		return x.StderrOmittedBytes
+	}
+	return 0
+}
+
 var File_guestagent_v1_guestagent_proto protoreflect.FileDescriptor
 
 const file_guestagent_v1_guestagent_proto_rawDesc = "" +
@@ -451,15 +496,16 @@ const file_guestagent_v1_guestagent_proto_rawDesc = "" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x0e\n" +
-	"\fInitResponse\"\x8c\x02\n" +
+	"\fInitResponse\"\xba\x02\n" +
 	"\vExecRequest\x12\x18\n" +
 	"\acommand\x18\x01 \x01(\tR\acommand\x12\x12\n" +
 	"\x04user\x18\x02 \x01(\tR\x04user\x12\x10\n" +
 	"\x03cwd\x18\x03 \x01(\tR\x03cwd\x12<\n" +
 	"\x03env\x18\x04 \x03(\v2*.gpubox.guestagent.v1.ExecRequest.EnvEntryR\x03env\x12\x1d\n" +
 	"\n" +
-	"timeout_ms\x18\x05 \x01(\x03R\ttimeoutMs\x12(\n" +
-	"\x10max_output_bytes\x18\x06 \x01(\x03R\x0emaxOutputBytes\x1a6\n" +
+	"timeout_ms\x18\x05 \x01(\x03R\ttimeoutMs\x12*\n" +
+	"\x11output_head_bytes\x18\x06 \x01(\x03R\x0foutputHeadBytes\x12*\n" +
+	"\x11output_tail_bytes\x18\a \x01(\x03R\x0foutputTailBytes\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbb\x01\n" +
@@ -470,12 +516,18 @@ const file_guestagent_v1_guestagent_proto_rawDesc = "" +
 	"\x06exited\x18\x04 \x01(\v2\x1c.gpubox.guestagent.v1.ExitedH\x00R\x06exitedB\a\n" +
 	"\x05event\"\x1b\n" +
 	"\aStarted\x12\x10\n" +
-	"\x03pid\x18\x01 \x01(\x05R\x03pid\"\x98\x01\n" +
+	"\x03pid\x18\x01 \x01(\x05R\x03pid\"\xbe\x02\n" +
 	"\x06Exited\x12\x1b\n" +
 	"\texit_code\x18\x01 \x01(\x05R\bexitCode\x12\x1b\n" +
 	"\ttimed_out\x18\x02 \x01(\bR\btimedOut\x12)\n" +
 	"\x10stdout_truncated\x18\x03 \x01(\bR\x0fstdoutTruncated\x12)\n" +
-	"\x10stderr_truncated\x18\x04 \x01(\bR\x0fstderrTruncated2\xa9\x01\n" +
+	"\x10stderr_truncated\x18\x04 \x01(\bR\x0fstderrTruncated\x12\x1f\n" +
+	"\vstdout_tail\x18\x05 \x01(\fR\n" +
+	"stdoutTail\x12\x1f\n" +
+	"\vstderr_tail\x18\x06 \x01(\fR\n" +
+	"stderrTail\x120\n" +
+	"\x14stdout_omitted_bytes\x18\a \x01(\x03R\x12stdoutOmittedBytes\x120\n" +
+	"\x14stderr_omitted_bytes\x18\b \x01(\x03R\x12stderrOmittedBytes2\xa9\x01\n" +
 	"\n" +
 	"GuestAgent\x12M\n" +
 	"\x04Init\x12!.gpubox.guestagent.v1.InitRequest\x1a\".gpubox.guestagent.v1.InitResponse\x12L\n" +

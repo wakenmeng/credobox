@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -202,26 +203,73 @@ func TestReInitWithoutCurrentTokenIsRefused(t *testing.T) {
 	}
 }
 
-func TestBufferedExecOutputIsCappedAndMarkedTruncated(t *testing.T) {
+func TestBufferedExecKeepsTheHeadAndTheTailAndDropsTheMiddle(t *testing.T) {
 	ga := startGuestAgent(t)
-	if _, err := ga.Init(ctx(t), &gav1.InitRequest{Token: "t1"}); err != nil {
-		t.Fatal(err)
-	}
+	initT(t, ga, nil)
 
-	// 1.5 MiB on stdout: more than the cap, so the rest must be dropped while
-	// the command still runs to completion.
+	// "start", 2 MB of filler, "end": the tail is where errors and summaries
+	// usually are, so it must survive along with the head.
 	res, err := runExec(withToken(ctx(t), "t1"), ga, &gav1.ExecRequest{
-		Command: "head -c 1572864 /dev/zero; echo small >&2", MaxOutputBytes: 1 << 20,
+		Command:         `printf 'start\n'; head -c 2000000 /dev/zero | tr '\0' m; printf '\nend\n'; echo small >&2`,
+		OutputHeadBytes: 1000, OutputTailBytes: 3000,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if len(res.stdout) != 1<<20 || !res.exited.StdoutTruncated {
-		t.Errorf("stdout: %d bytes, truncated=%v; want %d, true", len(res.stdout), res.exited.StdoutTruncated, 1<<20)
+	x := res.exited
+	if len(res.stdout) != 1000 || !strings.HasPrefix(string(res.stdout), "start\n") {
+		t.Errorf("head: %d bytes starting %q, want 1000 starting \"start\\n\"", len(res.stdout), res.stdout[:min(10, len(res.stdout))])
 	}
-	if string(res.stderr) != "small\n" || res.exited.StderrTruncated || res.exited.ExitCode != 0 {
-		t.Errorf("stderr=%q exited=%v; want \"small\\n\", not truncated, exit 0", res.stderr, res.exited)
+	if len(x.StdoutTail) != 3000 || !strings.HasSuffix(string(x.StdoutTail), "m\nend\n") {
+		t.Errorf("tail: %d bytes, want 3000 ending \"m\\nend\\n\"", len(x.StdoutTail))
+	}
+	if total := int64(len("start\n") + 2000000 + len("\nend\n")); !x.StdoutTruncated || x.StdoutOmittedBytes != total-4000 {
+		t.Errorf("truncated=%v omitted=%d, want true, %d", x.StdoutTruncated, x.StdoutOmittedBytes, total-4000)
+	}
+	if string(res.stderr) != "small\n" || len(x.StderrTail) != 0 || x.StderrTruncated || x.ExitCode != 0 {
+		t.Errorf("stderr=%q tail=%q exited=%v; want just \"small\\n\", exit 0", res.stderr, x.StderrTail, x)
+	}
+}
+
+func TestBufferedExecOutputBetweenHeadAndCapIsSplitWithNothingDropped(t *testing.T) {
+	ga := startGuestAgent(t)
+	initT(t, ga, nil)
+
+	// 2500 bytes: past the 1000-byte head, but within head plus tail.
+	res, err := runExec(withToken(ctx(t), "t1"), ga, &gav1.ExecRequest{
+		Command: "head -c 2500 /dev/zero | tr '\\0' a", OutputHeadBytes: 1000, OutputTailBytes: 3000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	whole := string(res.stdout) + string(res.exited.StdoutTail)
+	if whole != strings.Repeat("a", 2500) || res.exited.StdoutTruncated || res.exited.StdoutOmittedBytes != 0 {
+		t.Fatalf("head %d + tail %d bytes, truncated=%v omitted=%d; want all 2500, nothing dropped",
+			len(res.stdout), len(res.exited.StdoutTail), res.exited.StdoutTruncated, res.exited.StdoutOmittedBytes)
+	}
+}
+
+func TestBufferedExecCutsHeadAndTailOnCharacterBoundaries(t *testing.T) {
+	ga := startGuestAgent(t)
+	initT(t, ga, nil)
+
+	// Two-byte characters, with odd byte limits that fall inside one.
+	res, err := runExec(withToken(ctx(t), "t1"), ga, &gav1.ExecRequest{
+		Command: "yes é | head -n 100000 | tr -d '\\n'", OutputHeadBytes: 1001, OutputTailBytes: 2001,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	head, tail := string(res.stdout), string(res.exited.StdoutTail)
+	if !utf8.ValidString(head) || !utf8.ValidString(tail) || len(head) != 1000 || len(tail) != 2000 {
+		t.Fatalf("head %d bytes (valid=%v), tail %d bytes (valid=%v); want 1000 and 2000 bytes of whole characters",
+			len(head), utf8.ValidString(head), len(tail), utf8.ValidString(tail))
+	}
+	if got := int64(len(head)+len(tail)) + res.exited.StdoutOmittedBytes; got != 200000 {
+		t.Fatalf("head + tail + omitted = %d, want all 200000 bytes accounted for", got)
 	}
 }
 
@@ -371,7 +419,7 @@ func TestStreamedExecHasNoOutputCap(t *testing.T) {
 	ga := startGuestAgent(t)
 	initT(t, ga, nil)
 
-	// 3 MiB, three times the buffered cap; MaxOutputBytes 0 is streaming.
+	// 3 MiB, three times the buffered cap; no head or tail limit is streaming.
 	res, err := runExec(withToken(ctx(t), "t1"), ga, &gav1.ExecRequest{Command: "head -c 3145728 /dev/zero"})
 	if err != nil {
 		t.Fatal(err)
@@ -407,4 +455,22 @@ func TestExecOutputArrivesWhileTheCommandRuns(t *testing.T) {
 	if firstAt.IsZero() || exitedAt.Sub(firstAt) < 800*time.Millisecond {
 		t.Fatalf("\"first\" arrived %s before the end, want about 1 s (while the command was still running)", exitedAt.Sub(firstAt))
 	}
+}
+
+func TestExecHeldOpenByABackgroundChildTimesOutWithTheShellsExitCode(t *testing.T) {
+	ga := startGuestAgent(t)
+	initT(t, ga, nil)
+
+	// The shell exits 0 at once, but the child keeps stdout open, so the
+	// Exec runs until the timeout: timed_out, yet the shell's own exit code.
+	res, err := runExec(withToken(ctx(t), "t1"), ga, &gav1.ExecRequest{Command: "sleep 30 & echo $!", TimeoutMs: 300})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !res.exited.TimedOut || res.exited.ExitCode != 0 {
+		t.Fatalf("exited=%v, want timed_out with exit code 0", res.exited)
+	}
+	child, _ := strconv.Atoi(strings.TrimSpace(string(res.stdout)))
+	assertGone(t, "the background child", child)
 }

@@ -17,7 +17,7 @@
 | 字段 | | |
 |---|---|---|
 | `template` | 必填 | Template 的 OCI 镜像引用。 |
-| `env` | 可选 | Sandbox 里每个进程的默认环境变量：镜像的 entrypoint 和每条 Exec 都有。它们在 Init 中下发，从不写进容器配置（ADR 0008）。 |
+| `env` | 可选 | Sandbox 里每个进程的默认环境变量：镜像的 entrypoint 和每条 Exec 都有。它们在 Init 中下发，从不写进容器配置（ADR 0008）。**不要把秘密放在这里**：Sandbox 存活期间，这些值以明文存在 Control Plane 的数据库里（Sandbox 变成 Terminated 时清掉），而且 Sandbox 里的任何进程都能读到。凭据应该用 Secret（任务 23），它们从不进入 Sandbox。 |
 
 `201` 返回 Sandbox，带 `data_endpoint` 和 `access_token`；token 只在这里出现一次。创建失败或超时返回 `502` 或 `504`，Sandbox 变成 Terminated 并带 `termination_reason`。请求体或变量名不合法返回 `400`。
 
@@ -54,10 +54,16 @@
 
 ```json
 {"stdout": "...", "stderr": "...", "exit_code": 0, "timed_out": false,
- "stdout_truncated": false, "stderr_truncated": false}
+ "stdout_truncated": false, "stderr_truncated": false,
+ "stdout_omitted_bytes": 0, "stderr_omitted_bytes": 0}
 ```
 
-stdout 和 stderr 各保留前 1 MiB。其余部分照样读出来然后丢弃，命令仍会跑完，`*_truncated` 表示有内容被截掉。输出更多时请用流式。
+stdout 和 stderr 各自最多保留 1 MiB。不超过时，全部内容都在 `stdout`（`stderr`）里。超过时，**前 256 KiB** 放在 `stdout`，**最后 768 KiB** 放在 `stdout_tail`（`stderr_tail`），中间部分丢弃：`stdout_truncated` 为 `true`，`stdout_omitted_bytes` 表示两段之间少了多少字节。结尾分得多，是因为错误信息和汇总通常在输出的最后。两段都在 UTF-8 字符边界上切开。被丢弃的部分照样会读出来，所以命令仍会跑完。要拿到全部输出，请用流式。
+
+```json
+{"stdout": "Collecting ...", "stdout_tail": "... 3 failed, 120 passed",
+ "stdout_truncated": true, "stdout_omitted_bytes": 7340032, "exit_code": 1, ...}
+```
 
 #### 流式响应（`Accept: text/event-stream`）
 
@@ -90,7 +96,7 @@ data: {"exit_code":0,"timed_out":false}
 
 每条 Exec 的 shell 都是**自己进程组**的组长，它启动的所有进程都留在这个组里。（进程组是 `kill(-pgid)` 能一次打到的单位。只杀 shell 的话，它的子进程，比如用 `&` 启动的 server，会继续运行，而且没人管。）
 
-- **超时。** `timeout_seconds` 到了，整个进程组被 SIGKILL 杀掉。结果仍是正常响应：`"timed_out": true`，`exit_code` 通常是 137（128 + SIGKILL）。被杀之前的输出都保留。
+- **超时。** `timeout_seconds` 到了，整个进程组被 SIGKILL 杀掉。结果仍是正常响应，带 `"timed_out": true`，被杀之前的输出都保留。**以 `timed_out` 为准，不要看 `exit_code`**：`exit_code` 是 shell 自己的退出码。如果是这次 kill 结束了 shell，它是 137（128 + SIGKILL）；但如果 shell 早已退出，只是一个开着 stdout 或 stderr 的后台子进程拖住了 Exec（见下面的“正常结束”），它可以是任何值，常常是 0。比如不重定向输出的 `server &`，会在等满超时后返回 `"timed_out": true, "exit_code": 0`。
 - **客户端断开。** Exec 结束前客户端关闭连接（无论缓冲还是流式），Host data proxy 就会取消这条 Exec，Guest Agent 立即杀掉它的整个进程组。不会有任何东西继续运行，输出也没了：Exec 不能续接。必须在连接断开后继续运行的任务，请用 Process。
 - **正常结束。** shell 已经退出，**并且** stdout 和 stderr 都已关闭，Exec 才结束。一个后台子进程如果还开着它们（`server &`），Exec 会一直等到它退出，或者超时把整个组杀掉。输出被重定向的后台子进程（`server >/tmp/log 2>&1 &`）不会拖住 Exec，Exec 结束后它继续运行。
 - **局限。** 主动离开进程组的进程（`setsid`，或者 double-fork 进新 session 的 daemon）不会被组杀打到。
